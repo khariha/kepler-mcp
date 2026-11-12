@@ -258,8 +258,9 @@ async def next_lead(hunter_id: str, ctx: Context, star_type: str | None = None, 
                     "next": "tell the user what kinds are available and call next_lead again with a filter that has leads, or with none"}
         return {"lead": None, "available": avail,
                 "plain": "There are no open leads you have not already vetted. New leads come from searching new sky, and you can do that yourself: "
-                         "open a patch of about 150 unsearched stars and your computer searches it in about seven minutes.",
-                "next": f"offer to open a patch: open_patch(hunter_id='{hunter_id}'); or sky_map() to show coverage first"}
+                         "open a patch of about 150 unsearched stars and your computer searches it in about seven minutes. "
+                         "Patches come in three star types: red (best odds), orange, and yellow (Sun-like, giant planets only).",
+                "next": f"offer to open a patch: open_patch(hunter_id='{hunter_id}', star_type='red' | 'orange' | 'yellow'); or sky_map() to show coverage first"}
     star = lead["star"]
     desc = []
     if star.get("Tmag") is not None:
@@ -394,34 +395,36 @@ def _sky_call(fn, *a, **k):
         raise ToolError(str(e)) from None
 
 
-def _map_detector(sector, camera, ccd):
-    """Build one detector's patches in the background (a few minutes of catalogue queries)."""
-    if sky.ccd_status(sector, camera, ccd) in ("building", "ready"):
+def _map_detector(sector, camera, ccd, pop="red"):
+    """Build one detector's patches for one star type in the background (several minutes of catalogue queries)."""
+    if sky.ccd_status(sector, camera, ccd, pop) in ("building", "ready"):
         return False
-    sky.mark_ccd(sector, camera, ccd, "building")
+    sky.mark_ccd(sector, camera, ccd, "building", pop)
 
     def work():
         try:
             from tesshunt.targets import select_detector
+            lim = sky.POPULATIONS[pop]
             exclude = set(open(EXCLUDE_FILE).read().split()) if os.path.exists(EXCLUDE_FILE) else set()
-            stars = select_detector(sector, camera, ccd, os.path.join(store.DATA, "catalog"), exclude=exclude)
-            sky.build_ccd(sector, camera, ccd, stars)
+            stars = select_detector(sector, camera, ccd, os.path.join(store.DATA, "catalog"), exclude=exclude,
+                                    tmag=lim["tmag"], teff=lim["teff"], rad_max=lim["rad_max"])
+            sky.build_ccd(sector, camera, ccd, stars, pop)
         except Exception as e:
-            sky.mark_ccd(sector, camera, ccd, f"failed: {type(e).__name__}: {str(e)[:120]}")
+            sky.mark_ccd(sector, camera, ccd, f"failed: {type(e).__name__}: {str(e)[:120]}", pop)
     store._pool.submit(work)
     return True
 
 
-def _map_next():
-    """Start mapping the first detector of the open sectors that has not been mapped yet. Returns (sector, camera, ccd) or None."""
+def _map_next(pop="red"):
+    """Start mapping the first detector of the open sectors not yet mapped for this star type. Returns (sector, camera, ccd) or None."""
     for sec in sky.OPEN_SECTORS:
         for cam in (1, 2, 3, 4):
             for ccd in (1, 2, 3, 4):
-                st = sky.ccd_status(sec, cam, ccd)
+                st = sky.ccd_status(sec, cam, ccd, pop)
                 if st == "building":
                     return (sec, cam, ccd)
                 if st is None or str(st).startswith("failed"):
-                    _map_detector(sec, cam, ccd)
+                    _map_detector(sec, cam, ccd, pop)
                     return (sec, cam, ccd)
     return None
 
@@ -437,15 +440,15 @@ def _base_url(ctx):
 
 @mcp.tool(title="The sky map", annotations=READ)
 async def sky_map(ctx: Context, sector: int | None = None) -> dict:
-    """Which patches of sky have been searched and which are still unopened, per sector and detector, with leads found so far.
-    A patch is about 150 faint red-dwarf stars that nobody has searched; opening one runs the search on the hunter's own computer
-    (about seven minutes) and the result is kept for everyone."""
+    """Which patches of sky have been searched and which are still unopened, per sector, detector and star type, with leads found so far.
+    A patch is about 150 faint stars of one type (red, orange or yellow) that nobody has searched; opening one runs the search on the
+    planet hunter's own computer (about seven minutes) and the result is kept for everyone. `star_types` says what each type can reveal."""
     out = sky.summary(sector)
     t = out["totals"]
     if t["unopened"] == 0 and not out["detectors_being_mapped"] and not sky.PAUSED:
         nxt = _map_next()
         if nxt:
-            out["detectors_being_mapped"] = [{"sector": nxt[0], "camera": nxt[1], "ccd": nxt[2]}]
+            out["detectors_being_mapped"] = [{"sector": nxt[0], "camera": nxt[1], "ccd": nxt[2], "star_type": "red"}]
     if t["patches"] == 0:
         out["plain"] = ("No patches are mapped yet. Kepler is listing the stars on the first detector now, which takes about five minutes the first time. "
                         "Meanwhile there may be leads waiting (next_lead).")
@@ -458,21 +461,30 @@ async def sky_map(ctx: Context, sector: int | None = None) -> dict:
 
 
 @mcp.tool(title="Open a patch of sky", annotations=NOTE)
-async def open_patch(hunter_id: str, ctx: Context, patch_id: str | None = None) -> dict:
-    """Claim an unsearched patch of sky (about 150 stars) for this hunter and get the one command that searches it on their own computer.
-    The search takes about seven minutes, reads NASA's public data directly, and uploads only the results. The patch is held for two hours.
-    If you can run shell commands, run the returned command for the user and relay its progress; otherwise ask them to paste it into a terminal."""
-    p = _sky_call(sky.claim, hunter_id, patch_id)
+async def open_patch(hunter_id: str, ctx: Context, patch_id: str | None = None, star_type: str | None = None) -> dict:
+    """Claim an unsearched patch of sky (about 150 stars) for this planet hunter and get the one command that searches it on their own computer.
+    star_type picks the kind of star: red (default; small red dwarfs, best odds), orange, or yellow (faint Sun-like stars, where only giant
+    planets can show). The search takes about seven minutes, reads NASA's public data directly, and uploads only the results. The patch is
+    held for two hours. If you can run shell commands, run the returned command for the user and relay its progress; otherwise ask them to
+    paste it into a terminal. If no patch of that type is mapped yet, this starts the mapping (several minutes) and says so."""
+    if star_type and star_type not in sky.POPULATIONS:
+        raise ToolError(f"star_type must be one of {', '.join(sky.POPULATIONS)}; white and hotter stars are not offered")
+    pop = star_type or (None if patch_id else "red")
+    p = _sky_call(sky.claim, hunter_id, patch_id, None, pop)
     if p is None:
-        nxt = None if sky.PAUSED else _map_next()
-        return {"patch": None, "plain": ("Every mapped patch has been taken. Kepler is mapping the next detector now; fresh patches appear in about five minutes."
-                                           if nxt else "There are no unopened patches right now."),
-                "next": "offer a waiting lead with next_lead, and try open_patch again in a few minutes"}
+        nxt = None if sky.PAUSED else _map_next(pop or "red")
+        kind = pop or "red"
+        return {"patch": None, "star_type": kind,
+                "plain": (f"No {kind}-star patch is ready yet. Kepler is listing the unsearched {kind} stars on the next detector now; "
+                          f"patches appear in about {'ten to twenty' if kind == 'yellow' else 'five to ten'} minutes. " + sky.POPULATIONS[kind]["finds"]
+                          if nxt else "There are no unopened patches right now."),
+                "ready_now": sky.summary()["unopened_by_star_type"],
+                "next": "offer a patch of a star type that is ready now, or a waiting lead with next_lead, and try this again in a few minutes"}
     cmd = f"{SWEEP_CMD} {p['id']} --hunter {hunter_id} --hub {_base_url(ctx)}"
     store.trace(_sid(ctx), "open_patch", {"patch_id": p["id"]}, {"patch_id": p["id"]}, 0, False)
-    return {"patch_id": p["id"], "sector": p["sector"], "stars": p["n_stars"], "held_until_minutes": int((p["claimed_until"] - time.time()) / 60),
-            "command": cmd, "resumed": p["resumed"],
-            "plain": (f"Patch {p['id']} is yours: {p['n_stars']} faint red dwarfs in sector {p['sector']} that nobody has searched. "
+    return {"patch_id": p["id"], "sector": p["sector"], "star_type": p["pop"], "stars": p["n_stars"], "held_until_minutes": int((p["claimed_until"] - time.time()) / 60),
+            "command": cmd, "resumed": p["resumed"], "what_this_can_find": sky.POPULATIONS[p["pop"]]["finds"],
+            "plain": (f"Patch {p['id']} is yours: {p['n_stars']} faint {p['pop']} stars in sector {p['sector']} that nobody has searched. "
                       "The search runs on your computer and takes about seven minutes. Many patches turn up nothing; when one finds a signal it becomes a lead under your name."),
             "first_time": "The first run installs the science libraries, which takes a few minutes once. It needs Python 3.11 or newer.",
             "next": f"run the command (or ask the user to), then call patch_status(patch_id='{p['id']}') to see what came back"}
@@ -704,7 +716,7 @@ async def board_html(request):
             return '<tr><td colspan="4" class="none">None yet.</td></tr>'
         return "".join(f"<tr><td>TIC {i['tic']}</td><td>{i['period_d']:.3f} d</td><td>{i['depth_ppm']/1e4:.2f}%</td><td>{e(', '.join(i[who_key]))}</td></tr>" for i in items)
     sk = sky.summary(); st = sk["totals"]
-    cover = "".join(f"<tr><td>Sector {d['sector']}, camera {d['camera']}, detector {d['ccd']}</td><td>{d['searched']} of {d['patches']}</td><td>{d['stars_searched']}</td><td>{d['leads_found']}</td></tr>"
+    cover = "".join(f"<tr><td>Sector {d['sector']}, camera {d['camera']}, detector {d['ccd']}, {d['star_type']} stars</td><td>{d['searched']} of {d['patches']}</td><td>{d['stars_searched']}</td><td>{d['leads_found']}</td></tr>"
                     for d in sk["detectors"]) or '<tr><td colspan="4" class="none">No patches mapped yet.</td></tr>'
     openers = "".join(f"<li>{e(o['handle'])} <span>{o['patches']} patches, {o['stars']} stars</span></li>" for o in sk["openers"]) or "<li class=none>Nobody yet.</li>"
     active = "".join(f"<li>{e(h['handle'])} <span>{h['leads_vetted']} vetted</span></li>" for h in b["most_active"]) or "<li class=none>No hunters yet.</li>"

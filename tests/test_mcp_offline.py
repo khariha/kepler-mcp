@@ -263,14 +263,14 @@ def test_patches_are_built_claimed_and_released(tmp_data):
     assert s["totals"]["patches"] == 3 and s["totals"]["unopened"] == 3 and s["detectors"][0]["ccd"] == 3
     a, b = leads.join("ann")["hunter_id"], leads.join("bob")["hunter_id"]
     p = sky.claim(a, now=1000)
-    assert p["id"] == "s7-c2-3-01" and sky.claim(a, now=1001)["resumed"]
+    assert p["id"] == "s7-c2-3-r01" and sky.claim(a, now=1001)["resumed"]
     with pytest.raises(sky.SkyError, match="already claimed by ann"):
-        sky.claim(b, "s7-c2-3-01", now=1002)
-    assert sky.claim(b, now=1002)["id"] == "s7-c2-3-02"
-    assert len(sky.stars_for(a, "s7-c2-3-01")["stars"]) == 3
+        sky.claim(b, "s7-c2-3-r01", now=1002)
+    assert sky.claim(b, now=1002)["id"] == "s7-c2-3-r02"
+    assert len(sky.stars_for(a, "s7-c2-3-r01")["stars"]) == 3
     with pytest.raises(sky.SkyError, match="not held by you"):
-        sky.stars_for(b, "s7-c2-3-01")
-    assert sky.claim(b, "s7-c2-3-01", now=1000 + sky.CLAIM_SECONDS + 1)["opened_by"] == "bob"      # ann's hold lapsed
+        sky.stars_for(b, "s7-c2-3-r01")
+    assert sky.claim(b, "s7-c2-3-r01", now=1000 + sky.CLAIM_SECONDS + 1)["opened_by"] == "bob"      # ann's hold lapsed
 
 
 def test_lead_bar_keeps_transit_shapes_and_drops_rotators():
@@ -316,9 +316,9 @@ def test_rejected_patch_reopens(tmp_data):
 def test_claim_limit(tmp_data):
     sky, leads = _sky(tmp_data)
     a = leads.join("ann")["hunter_id"]
-    sky.claim(a, "s7-c2-3-01"); sky.claim(a, "s7-c2-3-02")
+    sky.claim(a, "s7-c2-3-r01"); sky.claim(a, "s7-c2-3-r02")
     with pytest.raises(sky.SkyError, match="finish one first"):
-        sky.claim(a, "s7-c2-3-03")
+        sky.claim(a, "s7-c2-3-r03")
 
 
 def test_helper_worker_is_importable_and_real_leads_come_first(tmp_data):
@@ -336,3 +336,17 @@ def test_helper_worker_is_importable_and_real_leads_come_first(tmp_data):
     h = leads.join("dan")["hunter_id"]
     first = leads.claim_next(h)
     assert first["tic"] == 555 and first["found_by"] == "cara" and first["practice"] is False     # a searched-patch lead outranks file leads
+
+
+def test_patches_by_star_type(tmp_data):
+    sky, leads = _sky(tmp_data)                                   # three red patches
+    ys = [{"tic": 2000 + i, "ra": 100 + 0.1 * i, "dec": -30.0, "Tmag": 14.0, "Teff": 5700, "rad": 1.0} for i in range(4)]
+    assert sky.build_ccd(7, 2, 3, ys, "yellow") == 2
+    s = sky.summary()
+    assert s["unopened_by_star_type"] == {"red": 3, "yellow": 2} and set(s["star_types"]) == {"red", "orange", "yellow"}
+    a = leads.join("ann")["hunter_id"]
+    y = sky.claim(a, pop="yellow")
+    assert y["id"] == "s7-c2-3-y01" and y["pop"] == "yellow"
+    assert sky.claim(a, pop="red")["id"] == "s7-c2-3-r01"         # a held yellow patch does not block asking for red
+    assert sky.claim(a, pop="yellow")["resumed"]
+    assert sky.claim(leads.join("bob")["hunter_id"], pop="orange") is None

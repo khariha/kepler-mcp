@@ -167,12 +167,16 @@ def available(hunter_id):
     with _lock, _db() as c:
         me = _handle(c, hunter_id)
         rows = c.execute("select * from leads l where l.status = 'open' and not exists (select 1 from vets v where v.lead_id = l.id and v.hunter = ?)", (me,)).fetchall()
-    by_star, by_size = {}, {}
+    by_star, by_size, practice = {}, {}, 0
     for r in rows:
         d = _lead_dict(r)
+        practice += d["practice"]
         by_star[d["star_type"] or "unknown"] = by_star.get(d["star_type"] or "unknown", 0) + 1
         by_size[d["size_if_planet"] or "unknown"] = by_size.get(d["size_if_planet"] or "unknown", 0) + 1
-    return {"open_for_you": len(rows), "by_star_type": by_star, "by_size_if_planet": by_size}
+    out = {"open_for_you": len(rows), "by_star_type": by_star, "by_size_if_planet": by_size}
+    if practice:
+        out["of_which_practice"] = practice
+    return out
 
 
 def get(lead_id):

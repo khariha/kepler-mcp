@@ -16,12 +16,22 @@ OPEN_SECTORS = [int(x) for x in os.environ.get("KEPLER_OPEN_SECTORS", "7 8").spl
 PAUSED = os.environ.get("KEPLER_PATCHES_PAUSED", "0") == "1"
 _lock = threading.RLock()
 
+# The kinds of star a patch can hold. Limits are passed to the target selection; `finds` is said to the planet hunter.
+POPULATIONS = {
+    "red": {"teff": (2300.0, 3900.0), "rad_max": 0.6, "tmag": (12.0, 15.0),
+            "finds": "small red dwarfs, where even Neptune-sized planets leave a dip of a percent. The least-searched stars and the best odds."},
+    "orange": {"teff": (3900.0, 5200.0), "rad_max": 0.85, "tmag": (12.5, 15.0),
+               "finds": "orange dwarfs, a little smaller than the Sun. Saturn- and Jupiter-sized planets show; smaller ones are lost in the noise at this faintness."},
+    "yellow": {"teff": (5200.0, 6000.0), "rad_max": 1.3, "tmag": (13.5, 15.0),
+               "finds": "faint Sun-like stars. Only giant planets (a dip near 1%) can show at this faintness, and brighter Sun-like stars were already searched by the mission, so these start at magnitude 13.5."},
+}
+
 SCHEMA = """
-create table if not exists patches (id text primary key, sector integer, camera integer, ccd integer, n integer, status text default 'unopened',
+create table if not exists patches (id text primary key, sector integer, camera integer, ccd integer, pop text default 'red', n integer, status text default 'unopened',
     opened_by text, claimed_until real, done_at real, n_stars integer, n_flagged integer default 0, n_leads integer default 0, note text);
 create table if not exists patch_stars (patch_id text, tic integer, star text, primary key (patch_id, tic));
 create table if not exists patch_rows (patch_id text, tic integer, row text, primary key (patch_id, tic));
-create table if not exists ccds (sector integer, camera integer, ccd integer, status text, n_stars integer, built real, primary key (sector, camera, ccd));
+create table if not exists ccds (sector integer, camera integer, ccd integer, pop text, status text, n_stars integer, built real, primary key (sector, camera, ccd, pop));
 """
 ROW_FIELDS = ("status", "period_d", "t0", "duration_h", "max_duration_h", "depth_ppm", "depth_err_ppm", "snr", "n_transits", "cadence_min")
 
@@ -32,18 +42,18 @@ class SkyError(Exception):
 
 def _db():
     os.makedirs(store.DATA, exist_ok=True)
-    c = sqlite3.connect(os.path.join(store.DATA, "sky.db"), timeout=30)
+    c = sqlite3.connect(os.path.join(store.DATA, "sky2.db"), timeout=30)
     c.row_factory = sqlite3.Row
     c.executescript(SCHEMA)
     return c
 
 
-def patch_id(sector, camera, ccd, n):
-    return f"s{sector}-c{camera}-{ccd}-{n:02d}"
+def patch_id(sector, camera, ccd, n, pop="red"):
+    return f"s{sector}-c{camera}-{ccd}-{pop[0]}{n:02d}"
 
 
 # ---------------- building patches ----------------
-def build_ccd(sector, camera, ccd, stars):
+def build_ccd(sector, camera, ccd, stars, pop="red"):
     """Cut one detector's stars into patches. stars: list of dicts with tic, ra, dec and whatever else the helper needs.
     Stars are ordered along a serpentine path across the detector so each patch is a compact piece of sky."""
     stars = sorted(stars, key=lambda s: s["tic"])
@@ -53,26 +63,26 @@ def build_ccd(sector, camera, ccd, stars):
         stars.sort(key=lambda s: (band(s), (s["ra"] - ra0) if band(s) % 2 == 0 else -(s["ra"] - ra0)))
     n_patches = max(1, math.ceil(len(stars) / PATCH_SIZE)) if stars else 0
     with _lock, _db() as c:
-        if c.execute("select 1 from ccds where sector=? and camera=? and ccd=? and status='ready'", (sector, camera, ccd)).fetchone():
+        if c.execute("select 1 from ccds where sector=? and camera=? and ccd=? and pop=? and status='ready'", (sector, camera, ccd, pop)).fetchone():
             return 0
         for i in range(n_patches):
             chunk = stars[i * PATCH_SIZE:(i + 1) * PATCH_SIZE]
-            pid = patch_id(sector, camera, ccd, i + 1)
-            c.execute("insert or ignore into patches (id, sector, camera, ccd, n, n_stars) values (?,?,?,?,?,?)", (pid, sector, camera, ccd, i + 1, len(chunk)))
+            pid = patch_id(sector, camera, ccd, i + 1, pop)
+            c.execute("insert or ignore into patches (id, sector, camera, ccd, pop, n, n_stars) values (?,?,?,?,?,?,?)", (pid, sector, camera, ccd, pop, i + 1, len(chunk)))
             c.executemany("insert or ignore into patch_stars values (?,?,?)", [(pid, int(s["tic"]), json.dumps(s)) for s in chunk])
-        c.execute("insert or replace into ccds values (?,?,?,?,?,?)", (sector, camera, ccd, "ready", len(stars), time.time()))
+        c.execute("insert or replace into ccds values (?,?,?,?,?,?,?)", (sector, camera, ccd, pop, "ready", len(stars), time.time()))
     return n_patches
 
 
-def ccd_status(sector, camera, ccd):
+def ccd_status(sector, camera, ccd, pop="red"):
     with _lock, _db() as c:
-        r = c.execute("select status from ccds where sector=? and camera=? and ccd=?", (sector, camera, ccd)).fetchone()
+        r = c.execute("select status from ccds where sector=? and camera=? and ccd=? and pop=?", (sector, camera, ccd, pop)).fetchone()
         return r["status"] if r else None
 
 
-def mark_ccd(sector, camera, ccd, status):
+def mark_ccd(sector, camera, ccd, status, pop="red"):
     with _lock, _db() as c:
-        c.execute("insert or replace into ccds values (?,?,?,?,?,?)", (sector, camera, ccd, status, 0, time.time()))
+        c.execute("insert or replace into ccds values (?,?,?,?,?,?,?)", (sector, camera, ccd, pop, status, 0, time.time()))
 
 
 # ---------------- claiming ----------------
@@ -80,8 +90,8 @@ def _release_expired(c, now):
     c.execute("update patches set status='unopened', opened_by=null, claimed_until=null where status='claimed' and claimed_until < ?", (now,))
 
 
-def claim(hunter_id, pid=None, now=None):
-    """Hold a patch for this hunter. With no id, picks an unopened one (resuming a patch they already hold first)."""
+def claim(hunter_id, pid=None, now=None, pop=None):
+    """Hold a patch for this hunter. With no id, picks an unopened one of the wanted star type (resuming a patch they already hold first)."""
     now = now or time.time()
     if PAUSED:
         raise SkyError("opening new patches is paused for now; there may still be leads waiting (next_lead)")
@@ -92,9 +102,10 @@ def claim(hunter_id, pid=None, now=None):
             _release_expired(c, now)
             held = c.execute("select * from patches where status='claimed' and opened_by=?", (me,)).fetchall()
             if pid is None:
-                if held:
-                    return dict(held[0]) | {"resumed": True}
-                row = c.execute("select * from patches where status='unopened' order by sector, camera, ccd, n limit 1").fetchone()
+                mine = [h for h in held if not pop or h["pop"] == pop]
+                if mine:
+                    return dict(mine[0]) | {"resumed": True}
+                row = c.execute("select * from patches where status='unopened'" + (" and pop=?" if pop else "") + " order by sector, camera, ccd, n limit 1", (pop,) if pop else ()).fetchone()
                 if not row:
                     return None
             else:
@@ -210,10 +221,10 @@ def summary(sector=None, now=None):
     now = now or time.time()
     with _lock, _db() as c:
         _release_expired(c, now)
-        q = "select sector, camera, ccd, status, count(*) n, sum(n_stars) stars, sum(n_leads) leads from patches" + (" where sector=?" if sector else "") + " group by sector, camera, ccd, status"
+        q = "select sector, camera, ccd, pop, status, count(*) n, sum(n_stars) stars, sum(n_leads) leads from patches" + (" where sector=?" if sector else "") + " group by sector, camera, ccd, pop, status"
         per = {}
         for r in c.execute(q, (sector,) if sector else ()):
-            d = per.setdefault((r["sector"], r["camera"], r["ccd"]), {"sector": r["sector"], "camera": r["camera"], "ccd": r["ccd"], "patches": 0, "searched": 0, "unopened": 0, "in_progress": 0, "stars_searched": 0, "leads_found": 0})
+            d = per.setdefault((r["sector"], r["camera"], r["ccd"], r["pop"]), {"sector": r["sector"], "camera": r["camera"], "ccd": r["ccd"], "star_type": r["pop"], "patches": 0, "searched": 0, "unopened": 0, "in_progress": 0, "stars_searched": 0, "leads_found": 0})
             d["patches"] += r["n"]
             if r["status"] == "done":
                 d["searched"] += r["n"]; d["stars_searched"] += r["stars"] or 0; d["leads_found"] += r["leads"] or 0
@@ -221,8 +232,13 @@ def summary(sector=None, now=None):
                 d["unopened"] += r["n"]
             else:
                 d["in_progress"] += r["n"]
-        building = [dict(r) for r in c.execute("select sector, camera, ccd from ccds where status='building'")]
+        building = [dict(r) for r in c.execute("select sector, camera, ccd, pop star_type from ccds where status='building'")]
         openers = [dict(r) for r in c.execute("select opened_by handle, count(*) patches, sum(n_stars) stars, sum(n_leads) leads from patches where status='done' group by opened_by order by 2 desc limit 20")]
-        dets = sorted(per.values(), key=lambda d: (d["sector"], d["camera"], d["ccd"]))
+        dets = sorted(per.values(), key=lambda d: (d["sector"], d["camera"], d["ccd"], d["star_type"]))
         tot = {k: sum(d[k] for d in dets) for k in ("patches", "searched", "unopened", "in_progress", "stars_searched", "leads_found")}
-        return {"open_sectors": OPEN_SECTORS, "patch_size": PATCH_SIZE, "totals": tot, "detectors": dets, "detectors_being_mapped": building, "openers": openers}
+        ready = {}
+        for d in dets:
+            ready[d["star_type"]] = ready.get(d["star_type"], 0) + d["unopened"]
+        return {"open_sectors": OPEN_SECTORS, "patch_size": PATCH_SIZE, "totals": tot, "unopened_by_star_type": ready, "detectors": dets,
+                "detectors_being_mapped": building, "openers": openers,
+                "star_types": {k: v["finds"] for k, v in POPULATIONS.items()}}
