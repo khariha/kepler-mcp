@@ -108,7 +108,8 @@ def test_server_registers_tools_and_guide():
         return {t.name for t in await server.mcp.list_tools()}
     names = anyio.run(go)
     assert names == {"resolve_star", "catalog_check", "light_curve", "search_transits", "vet_signal", "neighbors", "fold_plot",
-                     "followup_start", "job_status", "report_verdict", "read_guide"}
+                     "followup_start", "job_status", "report_verdict", "read_guide",
+                     "welcome", "lesson", "join", "next_lead", "submit_vet", "board", "my_progress"}
     g = server._guide()
     assert "eccentric" in g and "TIC " not in g.replace("TESS Input Catalog", "")
     assert "sweep" not in " ".join(names) and "mcmc" not in " ".join(names)
@@ -152,3 +153,73 @@ def test_short_transit_allowed_exposure_smearing():
     from tesshunt.sweep_core import candidate_bar
     assert not candidate_bar(40, 1500, 0.75, 0.46, 0.5, V(depth_err_ppm=90), min_depth_ppm=0)[0]
     assert candidate_bar(40, 1500, 0.75, 0.46, 0.5, V(depth_err_ppm=90, has_secondary=False), min_depth_ppm=0, cadence_h=0.5)[0]
+
+
+# ---------------- leads queue ----------------
+def _leads(tmp_data, n=3):
+    from tesshunt_mcp import leads
+    p = tmp_data / "l.jsonl"
+    p.write_text("\n".join(json.dumps({"tic": 100 + i, "sector": 7, "period_d": 2.5 + i, "t0": 1500.1, "duration_h": 1.5,
+                                         "depth_ppm": 9000, "snr": 20 - i, "star": {"Tmag": 13.5}}) for i in range(n)))
+    assert leads.load(str(p)) == n and leads.load(str(p)) == 0 and leads.count() == n
+    return leads
+
+
+def test_join_validates_and_keeps_names_unique(tmp_data):
+    from tesshunt_mcp import leads
+    a = leads.join("star_gazer")
+    assert a["handle"] == "star_gazer" and len(a["hunter_id"]) >= 10
+    for bad in ("ab", "has space", "x" * 21, "-lead", "<script>"):
+        with pytest.raises(leads.LeadError):
+            leads.join(bad)
+    with pytest.raises(leads.LeadError, match="taken"):
+        leads.join("Star_Gazer")
+    with pytest.raises(leads.LeadError, match="unknown hunter_id"):
+        leads.claim_next("not-a-real-id")
+
+
+def test_claims_spread_resume_and_expire(tmp_data):
+    leads = _leads(tmp_data)
+    a, b = leads.join("ann")["hunter_id"], leads.join("bob")["hunter_id"]
+    la = leads.claim_next(a, now=1000)
+    assert leads.claim_next(a, now=1100)["lead_id"] == la["lead_id"] and leads.claim_next(a, now=1100)["resumed"]
+    lb = leads.claim_next(b, now=1000)
+    assert lb["lead_id"] != la["lead_id"]                      # two hunters do not start on the same lead
+    later = leads.claim_next(a, now=1000 + leads.CLAIM_SECONDS + 1)
+    assert later["resumed"] is False                           # the old claim lapsed
+
+
+def test_agreeing_non_candidate_clears_in_one_vet(tmp_data):
+    leads = _leads(tmp_data, 1)
+    a = leads.join("ann")["hunter_id"]
+    lead = leads.claim_next(a)
+    status, info = leads.record(a, lead["lead_id"], "eclipsing_binary", False, "secondary", "second dip", "eclipsing_binary", [])
+    assert status == "cleared" and leads.claim_next(a) is None
+    with pytest.raises(leads.LeadError, match="already"):
+        leads.record(a, lead["lead_id"], "candidate", False, "other", "", "candidate_like", [])
+
+
+def test_survival_needs_two_hunters_and_the_server(tmp_data):
+    leads = _leads(tmp_data, 2)
+    a, b, c = (leads.join(n)["hunter_id"] for n in ("ann", "bob", "cyd"))
+    lead = leads.claim_next(a)["lead_id"]
+    assert leads.record(a, lead, "candidate", False, "recovery", "repeats", "candidate_like", [])[0] == "open"
+    assert leads.claim_next(b)["lead_id"] == lead              # the half-vetted lead is offered next
+    assert leads.record(b, lead, "candidate", False, "recovery", "repeats", "candidate_like", [])[0] == "surviving"
+    bd = leads.board()
+    assert bd["leads_surviving"] == 1 and bd["surviving"][0]["vetted_by"] == ["ann", "bob"]
+    # a lead the server does not believe never survives, however many hunters vote for it
+    other = leads.claim_next(a)["lead_id"]
+    for h in (a, b):
+        assert leads.record(h, other, "candidate", False, "other", "looks good", "eclipsing_binary", [])[0] == "open"
+    assert leads.record(c, other, "candidate", False, "other", "looks good", "eclipsing_binary", [])[0] == "cleared"
+    assert leads.board()["leads_surviving"] == 1
+    assert leads.stats(a) == {"handle": "ann", "leads_vetted": 2, "verdicts": {"candidate": 2}, "on_surviving_leads": 1}
+
+
+def test_hold_votes_do_not_count(tmp_data):
+    leads = _leads(tmp_data, 1)
+    a, b = leads.join("ann")["hunter_id"], leads.join("bob")["hunter_id"]
+    lead = leads.claim_next(a)["lead_id"]
+    leads.record(a, lead, "candidate", True, "dilution", "grazing", "candidate_like", [])
+    assert leads.record(b, lead, "candidate", False, "recovery", "ok", "candidate_like", [])[0] == "open"

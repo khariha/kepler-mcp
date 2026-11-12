@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start the tess-hunt MCP server locally.
+"""Start the Kepler MCP server locally.
 
     python start.py              # http://127.0.0.1:8000/mcp
     python start.py --port 9000
@@ -15,10 +15,11 @@ NEEDED = {"mcp": "mcp", "lightkurve": "lightkurve", "astrocut": "astrocut", "ast
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Start the tess-hunt MCP server")
+    ap = argparse.ArgumentParser(description="Start the Kepler MCP server")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--stdio", action="store_true", help="serve over stdio instead of HTTP")
+    ap.add_argument("--leads", default=None, help="leads file to load into the queue (default: ops/leads.jsonl, else the development leads)")
     args = ap.parse_args()
     say = (lambda *a: print(*a, file=sys.stderr)) if args.stdio else print   # stdout belongs to the protocol in stdio mode
 
@@ -46,13 +47,17 @@ def main():
             if s.connect_ex((args.host, args.port)) == 0:
                 sys.exit(f"Port {args.port} is already in use. Stop the other server or run: python start.py --port {args.port + 1}")
         url = f"http://{args.host}:{args.port}/mcp"
-        say(f"tess-hunt MCP server starting at {url}")
+        say(f"Kepler MCP server starting at {url}")
         say(f"  cache and logs: {os.environ['TESSHUNT_MCP_DATA']}")
-        say(f"  connect Claude Code (once):  claude mcp add --transport http tess-hunt {url}")
-        say('  then ask:  "Use tess-hunt on Pi Mensae. Run the tools yourself and show the numbers."')
-        say("  stop with Ctrl-C\n")
+        say(f"  connect Claude Code (once):  claude mcp add --transport http kepler {url}")
+        say('  then say:  "Open Kepler. Let\'s hunt for planets."')
+        say("  stop with Ctrl-C")
 
-    sys.argv = ["tesshunt-mcp"] + (["--stdio"] if args.stdio else ["--host", args.host, "--port", str(args.port)])
+    leads_file = args.leads or next((p for p in (os.path.join(ROOT, "ops", "leads.jsonl"), os.path.join(ROOT, "ops", "dev_leads.jsonl")) if os.path.exists(p)), "")
+    if leads_file and not args.stdio:
+        say(f"  leads file: {leads_file}" + ("  (development leads: known stars, for testing)" if leads_file.endswith("dev_leads.jsonl") else ""))
+        say(f"  board: http://{args.host}:{args.port}/board\n")
+    sys.argv = ["kepler-mcp"] + (["--stdio"] if args.stdio else ["--host", args.host, "--port", str(args.port)]) + (["--leads", leads_file] if leads_file else [])
     from tesshunt_mcp.server import main as serve
     try:
         serve()

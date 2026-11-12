@@ -1,4 +1,4 @@
-# tess-hunt MCP server. Build: docker build -t tess-hunt-mcp .   Run: see deploy/README.md
+# Kepler MCP server. Build: docker build -t kepler-mcp .   Run: see deploy/README.md
 FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 PYTHONWARNINGS=ignore MPLBACKEND=Agg MPLCONFIGDIR=/tmp/mpl \
     TESSHUNT_MCP_DATA=/app/data/mcp XDG_CACHE_HOME=/app/data/.cache

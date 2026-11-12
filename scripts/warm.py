@@ -1,4 +1,4 @@
-"""Smoke-test a running tess-hunt MCP server and warm its cache.
+"""Smoke-test a running Kepler MCP server and warm its cache.
 
     python scripts/warm.py http://127.0.0.1:8000/mcp                 # default: Pi Mensae, sector 1
     python scripts/warm.py https://your.host/mcp "TOI-700" "TIC 410153553"

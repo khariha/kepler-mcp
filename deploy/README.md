@@ -1,4 +1,4 @@
-# Deploying the tess-hunt MCP server on AWS
+# Deploying the Kepler MCP server on AWS
 
 One small instance in **us-east-1**, the region that holds the MAST full-frame-image cubes, so pixel fetches are fast and free of egress.
 
@@ -11,7 +11,7 @@ One small instance in **us-east-1**, the region that holds the MAST full-frame-i
 ## On the instance
 ```bash
 sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2 git
-git clone https://github.com/khariha/tess-hunt-mcp.git && cd tess-hunt-mcp/deploy
+git clone https://github.com/khariha/kepler-mcp.git && cd kepler-mcp/deploy
 printf 'MCP_DOMAIN=mcp.example.org\nTESSHUNT_MCP_SALT=%s\n' "$(openssl rand -hex 16)" > .env
 sudo docker compose up -d --build
 curl https://mcp.example.org/health

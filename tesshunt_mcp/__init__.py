@@ -1,1 +1,1 @@
-"""MCP server exposing the tess-hunt per-star procedure (lookup, light curve, search, vet, follow-up)."""
+"""Kepler: a guided MCP server for hunting transiting planet candidates in TESS data."""

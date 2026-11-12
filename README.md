@@ -1,26 +1,44 @@
-# tess-hunt-mcp
+# Kepler
 
-An MCP server that lets Claude, or any MCP client, look for **transiting planet candidates** around any star NASA's TESS mission observed, and then try to break what it finds.
+**Welcome to Kepler. Let's hunt for planets.**
 
-Give it a star. It builds the light curve from the mission's public full-frame images, searches for periodic dips, and runs the tests that separate planet candidates from eclipsing binaries, spotted stars and neighbours' eclipses. It works one star at a time and reports candidates, never planets: confirmation needs other telescopes.
+Kepler is an MCP server that lets Claude, or any MCP client, search NASA's TESS space-telescope data for **transiting planet candidates** and then try to break what it finds. It guides a newcomer through the whole thing. (Named for Johannes Kepler; the data is from the TESS mission, not the Kepler space telescope.)
+
+Three ways in:
+- **Learn.** Find a planet astronomers already know about, starting from raw telescope pixels, with every step explained. About ten minutes.
+- **Hunt.** Take a real lead: a star where a bulk search saw a repeating dip that nobody has checked. Try to break it. If it survives your tests and a second hunter's, it goes on the public board with your name. Most leads are impostors; expect roughly 1 in 10 to survive.
+- **Bring your own star.** Name any star TESS observed and run the full check.
+
+It reports candidates, never planets: confirmation needs other telescopes.
 
 ## Quick start
 ```bash
-git clone https://github.com/khariha/tess-hunt-mcp.git && cd tess-hunt-mcp
+git clone https://github.com/khariha/kepler-mcp.git && cd kepler-mcp
 pip install -e .
-claude mcp add tess-hunt -- tesshunt-mcp --stdio
-```
-Or run it as a local HTTP server. `start.py` checks the dependencies, starts it, and prints the connect command:
-```bash
 python start.py
-claude mcp add --transport http tess-hunt http://127.0.0.1:8000/mcp
+claude mcp add --transport http kepler http://127.0.0.1:8000/mcp
 ```
-Then ask:
-- "Use tess-hunt on Pi Mensae. Run the tools and show the numbers."
-- "Check TOI-700 with tess-hunt: which sectors observed it, and what does the earliest one show?"
-- "Run the hunt prompt on TIC 410153553."
+Then open Claude and say: **"Open Kepler. Let's hunt for planets."**
 
-## Tools
+`start.py` checks the dependencies, loads the leads queue, and prints the board address. For a client that launches the server itself: `claude mcp add kepler -- kepler-mcp --stdio`.
+
+## Hunting leads
+| Tool | What it does |
+|---|---|
+| `welcome()` | the greeting and the three paths |
+| `lesson()` | the guided five-step lesson on a known planet |
+| `join(handle)` | pick a hunter name; returns a `hunter_id` to keep for later sessions |
+| `next_lead(hunter_id)` | one unchecked lead, with the exact values to test |
+| `submit_vet(hunter_id, lead_id, verdict, reason, ...)` | your verdict, accepted only after the tests have been run |
+| `board()`, `my_progress(hunter_id)` | standings and your tally |
+
+The board is also a web page at `/board` (JSON at `/board.json`).
+
+**How the board stays honest.** A verdict is refused until the vetting and the multi-sector follow-up have actually been run on the lead's exact values. The server keeps its own reading of every lead from those results. A lead is listed as surviving only when two different hunters call it a candidate **and** the server's reading agrees, so nobody can vote an impostor onto the board. Nothing is submitted to any archive.
+
+Prompts: `start` (welcome), `hunt` (the guided loop over leads), `check_star(star)` (one star end to end).
+
+## Analysis tools
 | Tool | What it does | Typical time |
 |---|---|---|
 | `resolve_star(query)` | name, TIC id or coordinates to catalogue entry and observed sectors | 1 s |
@@ -34,7 +52,7 @@ Then ask:
 | `report_verdict(tic, verdict, reason)` | optional: record your final call | instant |
 | `read_guide()` | how transit signals fool you, and this server's limits | instant |
 
-Prompt `hunt(star)` walks the whole procedure. Resource `tess-hunt://guide` is the vetting guide ([tesshunt_mcp/guide.md](tesshunt_mcp/guide.md)).
+Every result carries `plain` (what it means in one sentence) and `next` (the sensible next step with exact values). Resource `kepler://guide` is the vetting guide ([tesshunt_mcp/guide.md](tesshunt_mcp/guide.md)).
 
 Units: times are BTJD (BJD - 2457000), depths ppm, durations hours, periods days.
 
@@ -58,11 +76,14 @@ Public archives only: TESS full-frame-image cubes and the TESS Input Catalog fro
 ## Running a public instance
 [deploy/README.md](deploy/README.md) has a one-box Docker and Caddy setup. A public instance rate-limits per user (60 ordinary calls and 5 follow-ups an hour by default) and caches results.
 
-**Logging.** By default the server appends tool name, arguments, numeric results, duration and an anonymous daily-rotating id to a local JSON-lines file. It stores no IP address, account, prompt or model reasoning. Set `TESSHUNT_MCP_TRACES=0` to turn it off.
+**Logging.** By default the server appends tool name, arguments, numeric results, duration and an anonymous daily-rotating id to a local JSON-lines file. It stores no IP address, account, prompt or model reasoning. A hunter name, if someone picks one, is public on the board. Set `TESSHUNT_MCP_TRACES=0` to turn it off.
 
 ## Development
 ```bash
 pip install -e ".[dev]" && pytest          # offline tests
 python scripts/warm.py http://127.0.0.1:8000/mcp   # live smoke test against a running server
+```
+Leads come from `ops/`: `ops/dev_leads.jsonl` holds three well-known stars for testing; a real queue goes in `ops/leads.jsonl`.
+```bash
 ```
 MIT licence.

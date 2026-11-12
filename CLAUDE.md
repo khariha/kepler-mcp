@@ -1,11 +1,13 @@
-# tess-hunt-mcp
+# Kepler (kepler-mcp)
 
 MCP server for finding and vetting transiting planet candidates in TESS full-frame images. General-purpose: it must work for any TESS star a user names and must not refer to any particular discovery, candidate list or manuscript.
 
 ## Layout
 - tesshunt/          science library: pipeline.py (clean, flatten, search, vet, centroid), sweep_core.py (pixel fetch, candidate_bar), cubes.py (pixel cache), vetting.py (catalogues, neighbours, verdict), followup.py (multi-sector recovery), star.py (TIC lookup)
 - tesshunt_mcp/      core.py (tools as plain functions), store.py (cache, traces, rate limits, jobs), server.py (MCP wiring), guide.md (vetting guide served to clients)
+- tesshunt_mcp/leads.py  the leads queue and public board (SQLite); ops/ holds leads files (dev_leads.jsonl = known stars for testing)
 - tests/             offline tests; scripts/warm.py is the live smoke test
+- start.py           one-command local launcher
 - deploy/            Docker + Caddy runbook
 
 ## Rules
@@ -34,4 +36,6 @@ MCP server for finding and vetting transiting planet candidates in TESS full-fra
 - One bad stretch of data in one orbit produced an "eclipsing binary" verdict → a deepest-box scan cannot tell an eclipse from a glitch → a secondary must recur in at least half the orbits (single sector) or half the sectors (follow-up); otherwise report it as a single event to check.
 - A confirmed planet was called "anomaly" on a centroid shift of 0.003 px → at high signal-to-noise tiny real shifts are "significant" and the neighbour model is crude → a clear on-target difference image outranks the centroid.
 - Clients did not see progress → progress notifications need a streamed response (json_response=False) and a tool that stays open → job_status waits up to 25 s and forwards the job's progress lines.
+- "Keep going until you find a candidate" ended with Claude checking famous nearby stars and finding nothing → one star at a time, picked by name, has odds near 1 in 20,000 → the product hands out pre-screened leads (next_lead) and the instructions open with welcome; do not ask a client to pick stars from memory.
+- A known planet host could have been listed as a "surviving candidate" → the consensus rule looked only at vetting and follow-up → the server's reading returns known_object when the cached catalog check lists the star, except for development leads, which the board labels as such.
 

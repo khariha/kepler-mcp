@@ -33,6 +33,11 @@ Passing all five makes a **candidate**. Confirmation takes other instruments: sp
 - Follow-up status: `repeats` (at least two sectors agree, none contradicts, stitched dip over 7 sigma), `does_not_repeat` (a sector that could have seen it did not), `eclipsing_binary` (second dip seen separately in at least half the sectors), `not_significant`, `inconclusive`, `single_sector_only`.
 - "One deep event at phase X" means a dip seen in a single orbit: an eclipse and a glitch look alike there, and only other sectors can tell.
 
+## Leads and the board
+- A lead is a star where a bulk search of many thousands of stars saw a repeating dip. The search is deliberately generous, so most leads are impostors. Roughly 1 in 10 survives.
+- Clearing an impostor is real work: it takes the star off everyone's list.
+- A lead reaches the board only when two different hunters call it a candidate and the server's own results agree. The board lists unconfirmed candidates; nothing is submitted anywhere.
+
 ## Limits of this server
 - Full-frame-image photometry with a simple aperture. Faint stars (TESS magnitude 15 and beyond) are noisy; saturated stars (brighter than about 6.5) bleed.
 - Period search covers 0.2 to 30 days and durations of 0.5 to 6 hours.
