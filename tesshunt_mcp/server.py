@@ -27,7 +27,8 @@ INSTRUCTIONS = """Kepler: transit search and vetting on NASA TESS full-frame ima
 
 Workflows
 - Check a named star: resolve_star -> catalog_check -> search_transits -> vet_signal -> neighbors -> followup_start -> job_status.
-- Vet a queued lead: join -> next_lead -> vet_signal -> neighbors -> followup_start -> job_status -> submit_vet.
+- Handles: propose the user's known first name as the handle and ask only for confirmation and a recovery word; the handle is public.
+- Vet a queued lead: join(handle, recovery_word) -> next_lead -> vet_signal -> neighbors -> followup_start -> job_status -> submit_vet.
 - Search new sky: join -> sky_map -> open_patch -> run the returned command on the user's computer -> patch_status -> next_lead.
 - lesson: an opt-in guided walkthrough on a known planet. read_guide: reference on false positives and verdict meanings.
 
@@ -228,13 +229,20 @@ def _lead_call(fn, *a, **k):
         raise ToolError(str(e)) from None
 
 
-@mcp.tool(title="Register a handle", annotations=NOTE)
-async def join(handle: str, ctx: Context) -> dict:
-    """Register a handle (3-20 letters, digits, dash, underscore) for the leads queue and the public board. Output: hunter_id, the credential
-    for every queue and sky call; it must be kept to continue as the same handle in a later session."""
-    out = _lead_call(leads.join, handle)
-    store.trace(_sid(ctx), "join", {"handle": out["handle"]}, {"joined": True}, 0, False)
-    return out | {"summary": f"Registered handle {out['handle']}. hunter_id is the credential for queue and sky calls; it is not recoverable if lost.",
+@mcp.tool(title="Register or sign in", annotations=NOTE)
+async def join(handle: str, recovery_word: str, ctx: Context) -> dict:
+    """Register a handle for the leads queue and the public board, or sign back in to an existing one. handle: 3-20 letters, digits, dash,
+    underscore; public. When the user's name is already known from the conversation or their profile, propose it as the handle (first name,
+    lower case) for them to confirm instead of asking an open question. recovery_word: 4-64 characters chosen by the user; the same handle and word always return the same hunter_id, so a
+    later session signs in by calling join again. It protects only board credit: it should not be a password used anywhere else, and it is
+    not logged. Output: hunter_id, the credential for every queue and sky call."""
+    ok, wait = store.allow(_sid(ctx), "light")
+    if not ok:
+        raise ToolError(f"rate limit reached; retry in about {max(1, wait // 60)} min")
+    out = _lead_call(leads.join, handle, recovery_word)
+    store.trace(_sid(ctx), "join", {"handle": out["handle"], "returning": out["returning"]}, {"joined": True}, 0, False)
+    return out | {"summary": (f"Signed in as {out['handle']}." if out["returning"] else f"Registered handle {out['handle']}.")
+                             + " The same handle and recovery word return this hunter_id in any later session.",
                   "next_actions": [core.act("next_lead", "take an unvetted lead", hunter_id=out["hunter_id"]),
                                    core.act("open_patch", "search unsearched sky", hunter_id=out["hunter_id"])]}
 
@@ -354,7 +362,7 @@ def hunt() -> str:
     """Procedure: take leads from the queue, test each, record a verdict. Opens a patch when the queue is empty."""
     return """Procedure: vet leads with Kepler.
 
-1. join(handle) if there is no hunter_id yet. Keep the hunter_id.
+1. join(handle, recovery_word) if there is no hunter_id yet. The same pair signs back in later.
 2. next_lead(hunter_id), with star_type or planet_size if a kind was requested. If none: open_patch(hunter_id), run its command, patch_status, then next_lead.
 3. Run the lead's next_actions with the given arguments: catalog_check, vet_signal, followup_start, then job_status until done. Add neighbors with the lead's depth.
 4. Decide: candidate, eclipsing_binary, blend_or_off_target, systematics_or_noise, known_object, or undecided. Cite the deciding numbers.

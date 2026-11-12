@@ -168,20 +168,25 @@ def _leads(tmp_data, n=3):
 
 def test_join_validates_and_keeps_names_unique(tmp_data):
     from tesshunt_mcp import leads
-    a = leads.join("star_gazer")
-    assert a["handle"] == "star_gazer" and len(a["hunter_id"]) >= 10
+    a = leads.join("star_gazer", "pass-word")
+    assert a["handle"] == "star_gazer" and len(a["hunter_id"]) == 12 and a["returning"] is False
+    again = leads.join("Star_Gazer", "pass-word")                 # same handle (any case) and word: signed back in with the same id
+    assert again["hunter_id"] == a["hunter_id"] and again["returning"] is True and again["handle"] == "star_gazer"
+    with pytest.raises(leads.LeadError, match=r"different recovery word.*available: star_gazer2, star_gazer3, star_gazer7"):
+        leads.join("star_gazer", "wrong-word")
+    with pytest.raises(leads.LeadError, match="recovery_word must be"):
+        leads.join("newname", "abc")
+    assert leads.join("other", "pass-word")["hunter_id"] != a["hunter_id"]      # the id depends on the handle too
     for bad in ("ab", "has space", "x" * 21, "-lead", "<script>"):
         with pytest.raises(leads.LeadError):
-            leads.join(bad)
-    with pytest.raises(leads.LeadError, match="taken"):
-        leads.join("Star_Gazer")
+            leads.join(bad, "pass-word")
     with pytest.raises(leads.LeadError, match="unknown hunter_id"):
         leads.claim_next("not-a-real-id")
 
 
 def test_claims_spread_resume_and_expire(tmp_data):
     leads = _leads(tmp_data)
-    a, b = leads.join("ann")["hunter_id"], leads.join("bob")["hunter_id"]
+    a, b = leads.join("ann", "pass-word")["hunter_id"], leads.join("bob", "pass-word")["hunter_id"]
     la = leads.claim_next(a, now=1000)
     assert leads.claim_next(a, now=1100)["lead_id"] == la["lead_id"] and leads.claim_next(a, now=1100)["resumed"]
     lb = leads.claim_next(b, now=1000)
@@ -192,7 +197,7 @@ def test_claims_spread_resume_and_expire(tmp_data):
 
 def test_agreeing_non_candidate_clears_in_one_vet(tmp_data):
     leads = _leads(tmp_data, 1)
-    a = leads.join("ann")["hunter_id"]
+    a = leads.join("ann", "pass-word")["hunter_id"]
     lead = leads.claim_next(a)
     status, info = leads.record(a, lead["lead_id"], "eclipsing_binary", False, "secondary", "second dip", "eclipsing_binary", [])
     assert status == "cleared" and leads.claim_next(a) is None
@@ -202,7 +207,7 @@ def test_agreeing_non_candidate_clears_in_one_vet(tmp_data):
 
 def test_survival_needs_two_hunters_and_the_server(tmp_data):
     leads = _leads(tmp_data, 2)
-    a, b, c = (leads.join(n)["hunter_id"] for n in ("ann", "bob", "cyd"))
+    a, b, c = (leads.join(n, "pass-word")["hunter_id"] for n in ("ann", "bob", "cyd"))
     lead = leads.claim_next(a)["lead_id"]
     assert leads.record(a, lead, "candidate", False, "recovery", "repeats", "candidate_like", [])[0] == "open"
     assert leads.claim_next(b)["lead_id"] == lead              # the half-vetted lead is offered next
@@ -220,7 +225,7 @@ def test_survival_needs_two_hunters_and_the_server(tmp_data):
 
 def test_hold_votes_do_not_count(tmp_data):
     leads = _leads(tmp_data, 1)
-    a, b = leads.join("ann")["hunter_id"], leads.join("bob")["hunter_id"]
+    a, b = leads.join("ann", "pass-word")["hunter_id"], leads.join("bob", "pass-word")["hunter_id"]
     lead = leads.claim_next(a)["lead_id"]
     leads.record(a, lead, "candidate", True, "dilution", "grazing", "candidate_like", [])
     assert leads.record(b, lead, "candidate", False, "recovery", "ok", "candidate_like", [])[0] == "open"
@@ -233,7 +238,7 @@ def test_lead_filters_and_availability(tmp_data):
             {"tic": 2, "sector": 7, "period_d": 3.0, "t0": 1.0, "duration_h": 2.0, "depth_ppm": 300, "snr": 15, "star": {"Teff": 5800, "rad": 1.0}},     # yellow, 1.9 Re
             {"tic": 3, "sector": 7, "period_d": 4.0, "t0": 1.0, "duration_h": 1.0, "depth_ppm": 900, "snr": 12, "star": {"Teff": 3200, "rad": 0.3}}]     # red, 0.98 Re
     p.write_text("\n".join(json.dumps(r) for r in rows)); leads.load(str(p))
-    h = leads.join("ann")["hunter_id"]
+    h = leads.join("ann", "pass-word")["hunter_id"]
     assert leads.available(h) == {"open_for_you": 3, "by_star_type": {"red": 2, "yellow": 1}, "by_size_if_planet": {"neptune": 1, "sub_neptune": 1, "rocky": 1}}
     first = leads.claim_next(h)
     assert first["tic"] == 1 and first["star_type"] == "red" and first["size_if_planet"] == "neptune"
@@ -261,7 +266,7 @@ def test_patches_are_built_claimed_and_released(tmp_data):
     sky, leads = _sky(tmp_data)
     s = sky.summary()
     assert s["totals"]["patches"] == 3 and s["totals"]["unopened"] == 3 and s["detectors"][0]["ccd"] == 3
-    a, b = leads.join("ann")["hunter_id"], leads.join("bob")["hunter_id"]
+    a, b = leads.join("ann", "pass-word")["hunter_id"], leads.join("bob", "pass-word")["hunter_id"]
     p = sky.claim(a, now=1000)
     assert p["id"] == "s7-c2-3-r01" and sky.claim(a, now=1001)["resumed"]
     with pytest.raises(sky.SkyError, match="already claimed by ann"):
@@ -285,7 +290,7 @@ def test_lead_bar_keeps_transit_shapes_and_drops_rotators():
 
 def test_upload_is_validated_and_flags_only_real_shapes(tmp_data):
     sky, leads = _sky(tmp_data)
-    a = leads.join("ann")["hunter_id"]
+    a = leads.join("ann", "pass-word")["hunter_id"]
     pid = sky.claim(a)["id"]
     tics = [s["tic"] for s in sky.stars_for(a, pid)["stars"]]
     with pytest.raises(sky.SkyError, match="has to finish"):
@@ -304,7 +309,7 @@ def test_upload_is_validated_and_flags_only_real_shapes(tmp_data):
 
 def test_rejected_patch_reopens(tmp_data):
     sky, leads = _sky(tmp_data)
-    a = leads.join("ann")["hunter_id"]
+    a = leads.join("ann", "pass-word")["hunter_id"]
     pid = sky.claim(a)["id"]
     tics = [s["tic"] for s in sky.stars_for(a, pid)["stars"]]
     sky.submit(a, pid, [_row(t) for t in tics])
@@ -315,7 +320,7 @@ def test_rejected_patch_reopens(tmp_data):
 
 def test_claim_limit(tmp_data):
     sky, leads = _sky(tmp_data)
-    a = leads.join("ann")["hunter_id"]
+    a = leads.join("ann", "pass-word")["hunter_id"]
     sky.claim(a, "s7-c2-3-r01"); sky.claim(a, "s7-c2-3-r02")
     with pytest.raises(sky.SkyError, match="finish one first"):
         sky.claim(a, "s7-c2-3-r03")
@@ -333,7 +338,7 @@ def test_helper_worker_is_importable_and_real_leads_come_first(tmp_data):
                     found_by="cara", patch_id="s7-c1-1-02")
     assert new and leads.has_real()
     assert leads.add({"tic": 555, "sector": 7, "period_d": 1.5, "t0": 1500.0, "duration_h": 1.0, "depth_ppm": 8000, "snr": 9.0}) is None   # no duplicates
-    h = leads.join("dan")["hunter_id"]
+    h = leads.join("dan", "pass-word")["hunter_id"]
     first = leads.claim_next(h)
     assert first["tic"] == 555 and first["found_by"] == "cara" and first["practice"] is False     # a searched-patch lead outranks file leads
 
@@ -344,12 +349,12 @@ def test_patches_by_star_type(tmp_data):
     assert sky.build_ccd(7, 2, 3, ys, "yellow") == 2
     s = sky.summary()
     assert s["unopened_by_star_type"] == {"red": 3, "yellow": 2} and set(s["star_types"]) == {"red", "orange", "yellow"}
-    a = leads.join("ann")["hunter_id"]
+    a = leads.join("ann", "pass-word")["hunter_id"]
     y = sky.claim(a, pop="yellow")
     assert y["id"] == "s7-c2-3-y01" and y["pop"] == "yellow"
     assert sky.claim(a, pop="red")["id"] == "s7-c2-3-r01"         # a held yellow patch does not block asking for red
     assert sky.claim(a, pop="yellow")["resumed"]
-    assert sky.claim(leads.join("bob")["hunter_id"], pop="orange") is None
+    assert sky.claim(leads.join("bob", "pass-word")["hunter_id"], pop="orange") is None
 
 
 # ---------------- voice and result contract ----------------

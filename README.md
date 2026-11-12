@@ -23,7 +23,7 @@ Then, in Claude: "Use Kepler to check Pi Mensae", "give me a lead to vet", or "s
 ## Leads queue
 | Tool | What it does |
 |---|---|
-| `join(handle)` | register a handle; returns the `hunter_id` credential |
+| `join(handle, recovery_word)` | register a handle or sign back in; returns the `hunter_id` credential. The same handle and word always give the same id |
 | `next_lead(hunter_id, star_type?, planet_size?)` | one unvetted lead with the arguments for the tests |
 | `submit_vet(hunter_id, lead_id, verdict, reason, ...)` | record a verdict; accepted only after the tests have run |
 | `board()`, `my_progress(hunter_id)` | standings and one handle's tally |

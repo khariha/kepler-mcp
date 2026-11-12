@@ -80,22 +80,42 @@ def count():
 
 
 # ---------------- hunters ----------------
-def join(handle):
+ID_SALT = os.environ.get("KEPLER_ID_SALT", "kepler-handles")
+
+
+def _derive(handle, word):
+    """The hunter_id for a handle and recovery word. Deterministic, so the same pair always gives the same id and nothing secret is stored."""
+    import base64
+    digest = hashlib.sha256(f"{ID_SALT}|{handle.lower()}|{word}".encode()).digest()
+    return base64.urlsafe_b64encode(digest)[:12].decode()
+
+
+def join(handle, recovery_word):
+    """Register a handle, or sign back in to one. Returns {"handle", "hunter_id", "returning"}."""
     handle = (handle or "").strip()
+    word = (recovery_word or "").strip()
     if not HANDLE.fullmatch(handle):
         raise LeadError("handle must be 3 to 20 characters: letters, digits, dash or underscore, starting with a letter or digit")
-    hunter_id = secrets.token_urlsafe(9)
+    if not 4 <= len(word) <= 64:
+        raise LeadError("recovery_word must be 4 to 64 characters; it is what reclaims this handle in a later session")
+    hunter_id = _derive(handle, word)
     with _lock, _db() as c:
-        if c.execute("select 1 from hunters where handle = ?", (handle,)).fetchone():
-            raise LeadError(f"handle '{handle}' is taken; choose another, or use the hunter_id issued when it was registered")
+        row = c.execute("select id_hash, handle from hunters where handle = ?", (handle,)).fetchone()
+        if row:
+            if row["id_hash"] != _hash(hunter_id):
+                free = [h for h in (f"{handle}{n}" for n in (2, 3, 7, 42, 99)) if len(h) <= 20
+                        and not c.execute("select 1 from hunters where handle = ?", (h,)).fetchone()][:3]
+                raise LeadError(f"handle '{handle}' is registered with a different recovery word; use that word, or choose another handle"
+                                + (f" (available: {', '.join(free)})" if free else ""))
+            return {"handle": row["handle"], "hunter_id": hunter_id, "returning": True}
         c.execute("insert into hunters values (?,?,?)", (_hash(hunter_id), handle, time.time()))
-    return {"handle": handle, "hunter_id": hunter_id}
+    return {"handle": handle, "hunter_id": hunter_id, "returning": False}
 
 
 def _handle(c, hunter_id):
     row = c.execute("select handle from hunters where id_hash = ?", (_hash(hunter_id or ""),)).fetchone()
     if not row:
-        raise LeadError("unknown hunter_id; call join(handle), or pass the hunter_id issued at registration")
+        raise LeadError("unknown hunter_id; call join(handle, recovery_word) to register or to sign back in")
     return row["handle"]
 
 
