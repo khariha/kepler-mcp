@@ -179,6 +179,11 @@ def _sig(tic, sector, b):
 # ---------------- tools ----------------
 def resolve_star(query):
     s = dict(star(query))
+    d = s.pop("d", None)                      # parsecs; unlabeled it was read as light-years
+    s["distance_pc"] = d
+    s["distance_light_years"] = d * 3.2616 if d else None
+    s["units"] = {"ra": "deg", "dec": "deg", "Teff": "K", "rad": "solar radii", "mass": "solar masses",
+                  "pmRA": "mas/yr", "pmDEC": "mas/yr", "Tmag": "TESS magnitude (smaller is brighter)"}
     s["note"] = "sectors lists every sector whose footprint contains the star; the newest may not have public cubes yet"
     if s["sectors"]:
         s["plain"] = f"TESS watched this star in {len(s['sectors'])} month-long sector(s)."
@@ -587,10 +592,12 @@ def followup(tic, period_d, t0, duration_h, depth_ppm, progress=lambda m: None):
             out["secondary_check"] = {"phase": ph0, "depth_ppm_stitched": sdep, "sectors_covering": sec_cov, "sectors_showing_it": sec_yes,
                                       "rule": f"an eclipse is real when at least {need} of the covering sectors each show it at 3 sigma"}
             if len(sec_yes) >= need:
+                out["secondary_check"]["conclusion"] = "a real second eclipse: eclipsing binary"
                 out["status"] = "eclipsing_binary"
                 out["caveats"].insert(0, f"secondary eclipse {sdep:.0f} ppm at phase {ph0:.2f}, seen separately in {len(sec_yes)} of {len(sec_cov)} sectors: eclipsing binary")
             else:
-                out["caveats"].insert(0, f"the stitched data show a {sdep:.0f} ppm dip at phase {ph0:.2f}, but only {len(sec_yes)} of {len(sec_cov)} sectors show it on their own: more likely leftover systematics than an eclipse; inspect those sectors")
+                out["secondary_check"]["conclusion"] = "not an eclipse: no single sector shows it, so it is leftover noise in the stack, not a second body"
+                out["caveats"].insert(0, f"the stitched data show a {sdep:.0f} ppm dip at phase {ph0:.2f}, but only {len(sec_yes)} of {len(sec_cov)} sectors show it on their own: leftover noise in the stack, not an eclipse and not evidence of another body")
         if abs(joint["odd"] - joint["even"]) > 3 * err:
             out["caveats"].insert(0, "odd and even depths differ in the stitched data: possible eclipsing binary at twice the period")
     if status == "does_not_repeat":

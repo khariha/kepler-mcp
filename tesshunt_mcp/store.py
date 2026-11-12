@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.environ.get("TESSHUNT_MCP_DATA", os.path.join(ROOT, "data", "mcp"))
-VERSION = "4"   # bump to invalidate cached results when the science changes
+VERSION = "5"   # bump to invalidate cached results when the science changes
 
 
 def clean(o, sig=7):

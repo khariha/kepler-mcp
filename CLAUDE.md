@@ -38,4 +38,6 @@ MCP server for finding and vetting transiting planet candidates in TESS full-fra
 - Clients did not see progress → progress notifications need a streamed response (json_response=False) and a tool that stays open → job_status waits up to 25 s and forwards the job's progress lines.
 - "Keep going until you find a candidate" ended with Claude checking famous nearby stars and finding nothing → one star at a time, picked by name, has odds near 1 in 20,000 → the product hands out pre-screened leads (next_lead) and the instructions open with welcome; do not ask a client to pick stars from memory.
 - A known planet host could have been listed as a "surviving candidate" → the consensus rule looked only at vetting and follow-up → the server's reading returns known_object when the cached catalog check lists the star, except for development leads, which the board labels as such.
+- A Haiku client told the user Pi Mensae is "18 light-years away" (it is 18 parsecs, 60 light-years) → the tool returned a bare `d` → every quantity a client may read aloud carries its unit in the field name or a `units` map.
+- The same client called a stacked 333 ppm off-phase dip "a possible second body" though the server had judged it noise → the number was prominent and the judgement was buried in caveats → put the conclusion next to the number (secondary_check.conclusion).
 
