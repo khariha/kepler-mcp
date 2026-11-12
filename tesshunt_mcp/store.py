@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.environ.get("TESSHUNT_MCP_DATA", os.path.join(ROOT, "data", "mcp"))
-VERSION = "2"   # bump to invalidate cached results when the science changes
+VERSION = "4"   # bump to invalidate cached results when the science changes
 
 
 def clean(o, sig=7):
@@ -127,12 +127,14 @@ def job_start(tool, k, fn):
         j = _jobs.get(k)
         if j and j["state"] in ("queued", "running"):
             return j["state"]
-        _jobs[k] = j = {"state": "queued", "tool": tool, "started": time.time(), "error": None, "progress": ""}
+        _jobs[k] = j = {"state": "queued", "tool": tool, "started": time.time(), "error": None, "progress": "", "steps": 0}
 
     def work():
         j["state"] = "running"
         try:
-            result, png = fn(lambda m: j.__setitem__("progress", str(m)[:200]))
+            def note(m):
+                j["progress"] = str(m).strip()[:200]; j["steps"] += 1
+            result, png = fn(note)
             cache_put(tool, k, clean(result), png)
             j["state"] = "done"
         except Exception as e:
@@ -149,7 +151,7 @@ def job_get(tool, k):
     j = _jobs.get(k)
     if not j:
         return {"state": "unknown"}, None
-    out = {"state": j["state"], "elapsed_s": round(time.time() - j["started"]), "progress": j["progress"]}
+    out = {"state": j["state"], "elapsed_s": round(time.time() - j["started"]), "progress": j["progress"], "steps_done": j["steps"]}
     if j["error"]:
         out["error"] = j["error"]
     return out, None

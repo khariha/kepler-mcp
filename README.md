@@ -30,7 +30,7 @@ Then ask:
 | `vet_signal(tic, sector, period_d, t0, duration_h)` | odd/even depths, secondary eclipse at every phase, physical duration, centroid shift, difference image, neighbours; verdict with reasons | 5-15 s |
 | `neighbors(tic, sector, depth_ppm?)` | stars within 3 pixels and the eclipse each would need to fake the dip | 5 s |
 | `fold_plot(tic, sectors, period_d, t0)` | overlay up to 4 sectors folded at a period | 5 s when cached |
-| `followup_start(...)`, `job_status(job_id)` | independent search of every observed sector (up to 12) and a stitched refinement | 1-5 min |
+| `followup_start(...)`, `job_status(job_id)` | independent search of every observed sector (up to 12), a stitched refinement, and a sector-by-sector agreement check. `job_status` waits and streams live progress | 1-5 min |
 | `report_verdict(tic, verdict, reason)` | optional: record your final call | instant |
 | `read_guide()` | how transit signals fool you, and this server's limits | instant |
 
@@ -41,7 +41,10 @@ Units: times are BTJD (BJD - 2457000), depths ppm, durations hours, periods days
 ## How it adapts to the star
 - Stars brighter than TESS magnitude 9 get a 25-pixel cutout and a stricter aperture; fainter stars a 15-pixel cutout.
 - The candidate bar defaults to search SNR 9 with no depth floor, plus shape tests. Both thresholds are arguments to `search_transits`.
-- Every result carries a `caveats` list (saturation, crowding, missing stellar radius, single sector).
+- Fast-moving nearby stars are tracked: each sector's cutout is centred where the star was at that time.
+- When the catalogue has no radius or mass (common for the coolest dwarfs), they are estimated from the absolute K magnitude and flagged.
+- Significance is judged against the measured scatter of the light curve, not a white-noise formula, so bright stars with correlated noise are not over-trusted.
+- Every result carries a `caveats` list (saturation, crowding, estimated parameters, single sector).
 
 ## Limits
 - Simple aperture photometry on full-frame images. Expect it to find hot, deep or frequent transits, not Earth analogues.

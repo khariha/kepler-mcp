@@ -44,7 +44,7 @@ def recover(ra, dec, sectors, P0, t00, dur0, depth0, cutout=15, loader=None, log
             if len(flat) < 300:
                 per_sector.append(dict(sector=s, status="too few cadences", cadence_min=cad_min)); continue
             r = P.search(flat, min_period=P0 * 0.97, max_period=P0 * 1.03, n_periods=3000,
-                         min_duration_hours=0.5, max_duration_hours=max(4.0, dur0 * 24 * 2), duration_step_hours=0.25)
+                         min_duration_hours=0.5, max_duration_hours=max(0.75, min(max(4.0, dur0 * 24 * 2), 0.5 * P0 * 24)), duration_step_hours=0.25)
             v = P.vet(flat, r.period, r.t0, r.duration)
             noise = float(np.nanstd(flat.flux.value)) * 1e6
             per_sector.append(dict(sector=s, status="ok", cadence_min=cad_min, n=len(flat), noise_ppm=noise,
@@ -59,6 +59,9 @@ def recover(ra, dec, sectors, P0, t00, dur0, depth0, cutout=15, loader=None, log
 
     ps = pd.DataFrame(per_sector)
     ok = ps[ps.status == "ok"] if "status" in ps else ps.iloc[0:0]
+    if len(ok) == 0:
+        log("no usable sector")
+        return dict(per_sector=ps, ok=ok, detected=ok, flats=flats, joint=None, stitched=None)
     detected = ok[(ok.snr >= 7) & (np.abs(ok.period - P0) / P0 < 0.02) & (ok.depth_ppm > 0.4 * depth0)]
     log(f"signal recovered in {len(detected)} of {len(ok)} usable sectors")
 
@@ -69,7 +72,7 @@ def recover(ra, dec, sectors, P0, t00, dur0, depth0, cutout=15, loader=None, log
         stitched = stitched[np.isfinite(stitched.flux.value)]
         base = stitched.time.max().value - stitched.time.min().value
         periods = np.linspace(P0 * 0.995, P0 * 1.005, 40000)
-        pg = stitched.to_periodogram(method="bls", period=periods, duration=np.arange(0.5, max(4.0, dur0 * 48) + 1e-9, 0.25) / 24)
+        pg = stitched.to_periodogram(method="bls", period=periods, duration=np.arange(0.5, max(0.75, min(max(4.0, dur0 * 48), 0.5 * P0 * 24)) + 1e-9, 0.25) / 24)
         Pj, t0j, durj = float(pg.period_at_max_power.value), float(pg.transit_time_at_max_power.value), float(pg.duration_at_max_power.value)
         dj = pg.depth_at_max_power; dj = float(dj.value) if hasattr(dj, "value") else float(dj)
         vj = P.vet(stitched, Pj, t0j, durj)

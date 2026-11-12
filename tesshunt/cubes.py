@@ -5,12 +5,12 @@ from tesshunt.sweep_core import get_tpf
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CUBES = os.path.join(ROOT, "data", "cubes")
 
-def cube_path(tic, sector, size=15):
-    return os.path.join(CUBES, f"s{sector}_tic{tic}_{size}x{size}.fits")
+def cube_path(tic, sector, size=15, tag=""):
+    return os.path.join(CUBES, f"s{sector}_tic{tic}_{size}x{size}{tag}.fits")
 
-def load_tpf(tic, sector, ra, dec, size=15):
+def load_tpf(tic, sector, ra, dec, size=15, tag=""):
     """Cached TPF for (tic, sector); fetches from MAST S3 and saves when missing. None if the sector has no cube."""
-    p = cube_path(tic, sector, size)
+    p = cube_path(tic, sector, size, tag)
     if os.path.exists(p):
         return lk.TessTargetPixelFile(p)
     tpf = get_tpf(ra, dec, sector, size, "s3")

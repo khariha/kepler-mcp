@@ -28,6 +28,11 @@ Passing all five makes a **candidate**. Confirmation takes other instruments: sp
 - **An on-target verdict** does not rule out a companion inside the same pixel. TESS cannot separate stars closer than about 4 arcseconds.
 - **Statistical validation tools** model the primary dip and the field. They do not see a secondary eclipse, so they cannot replace the tests above.
 
+## What the verdicts mean
+- `vet_signal`: `eclipsing_binary` (a second dip that recurs every orbit), `not_significant` (under 4 sigma against the measured scatter), `not_transit_shaped` (too long, too wide or odd/even mismatch), otherwise where the dip is: `on_target`, `likely_on_target`, `blended`, `anomaly`, `off_target`, `untestable`.
+- Follow-up status: `repeats` (at least two sectors agree, none contradicts, stitched dip over 7 sigma), `does_not_repeat` (a sector that could have seen it did not), `eclipsing_binary` (second dip seen separately in at least half the sectors), `not_significant`, `inconclusive`, `single_sector_only`.
+- "One deep event at phase X" means a dip seen in a single orbit: an eclipse and a glitch look alike there, and only other sectors can tell.
+
 ## Limits of this server
 - Full-frame-image photometry with a simple aperture. Faint stars (TESS magnitude 15 and beyond) are noisy; saturated stars (brighter than about 6.5) bleed.
 - Period search covers 0.2 to 30 days and durations of 0.5 to 6 hours.

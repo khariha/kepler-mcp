@@ -42,7 +42,7 @@ async def main(url, stars):
                 f = await call("job_status", job_id=j["job_id"]) if j else None
                 if not f or f["state"] in ("done", "failed"):
                     break
-                await anyio.sleep(15)
+                await anyio.sleep(1)
             print(f"  -> TIC {tic} sector {sec}: P={b['period_d']:.4f} d depth={b['depth_ppm']:.0f} ppm SNR={b['snr']:.1f} bar={'pass' if r['passes_candidate_bar'] else 'fail'}; "
                   f"known host={c0 and c0['known_planet_host']}; vet={v and v['verdict']}; follow-up={f and f.get('status')} "
                   f"({f and len(f.get('sectors_agreeing', []))} of {f and f.get('usable_sectors')} sectors agree, {f and len(f.get('sectors_contradicting', []))} contradict)")

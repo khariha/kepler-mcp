@@ -52,6 +52,11 @@ def verdict(row, c, g):
     if not peak_ok and c["diff_peak_snr"] > 4:
         reasons.append(f"difference image peaks {c['diff_peak_dpx']:.1f} px off target at {c['diff_peak_snr']:.0f} sigma")
         v = "off_target"
+    elif not shift_ok and c["shift_px"] > 5 * max(exp_shift, 1e-4) and peak_ok and c["diff_peak_snr"] >= 5:
+        v = "on_target"
+        reasons.append(f"difference image peaks on the target ({c['diff_peak_dpx']:.1f} px away, {c['diff_peak_snr']:.0f} sigma); "
+                       f"the centroid also moves {c['shift_px']:.3f} px ({c['shift_sigma']:.0f} sigma), more than neighbours within 2 px predict, "
+                       "which usually means a brighter star just outside that radius or a fast-moving target")
     elif not shift_ok and c["shift_px"] > 5 * max(exp_shift, 1e-4):
         reasons.append(f"centroid shifts {c['shift_px']:.3f} px ({c['shift_sigma']:.0f} sigma), {c['shift_px']/max(exp_shift,1e-4):.0f}x what an on-target dip predicts")
         v = "anomaly"

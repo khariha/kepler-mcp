@@ -150,20 +150,39 @@ def vet(flat, period, t0, duration):
     # how far the deepest box stands out from all the other boxes: the scan takes a maximum over ~70 phases and
     # real light curves have correlated noise, so the white-noise error alone overstates its significance
     any_sigma = np.nan
+    formal_err = scatter / np.sqrt(n_in / 2)
+    depth_err = formal_err
     if len(boxes) >= 20:
         b = np.array(boxes); med = np.median(b); mad = 1.4826 * np.median(np.abs(b - med))
         if mad > 0:
             any_sigma = (best_any - med) / mad
+            # a box holds all in-transit points; an odd-only or even-only depth holds half, hence sqrt(2).
+            # On bright stars correlated noise dominates and the white-noise error is far too small.
+            depth_err = max(formal_err, mad * np.sqrt(2))
+    # a real eclipse is there every orbit; one bad stretch of data is there once
+    orbits_covering, orbits_showing = 0, 0
+    if np.isfinite(best_phase):
+        w = np.abs(((phase - best_phase + 0.5) % 1) - 0.5) < (duration / period) / 2
+        k = np.floor((t - t0) / period).astype(int)
+        for c in np.unique(k[w]):
+            sel = w & (k == c)
+            if sel.sum() >= 3:
+                orbits_covering += 1
+                orbits_showing += bool(np.nanmean(out) - np.nanmean(f[sel]) >= 0.5 * best_any)
+    deep = bool(np.isfinite(scatter) and n_in > 0 and best_any > 4 * formal_err and (not np.isfinite(any_sigma) or any_sigma >= 5))
+    recurs = orbits_covering >= 2 and orbits_showing >= max(2, int(np.ceil(0.5 * orbits_covering)))
     return {
-        "has_secondary": bool(np.isfinite(scatter) and n_in > 0 and best_any > 4 * scatter / np.sqrt(n_in / 2)
-                              and (not np.isfinite(any_sigma) or any_sigma >= 5)),
+        "has_secondary": bool(deep and recurs),
+        "secondary_single_event": bool(deep and not recurs),
+        "secondary_orbits_covering": int(orbits_covering), "secondary_orbits_showing": int(orbits_showing),
         "secondary_any_phase_sigma": float(any_sigma),
         "secondary_any_phase_ppm": best_any * 1e6,
         "secondary_any_phase_at": best_phase,
         "odd_depth_ppm": (1 - np.nanmean(odd)) * 1e6 if len(odd) else float("nan"),
         "even_depth_ppm": (1 - np.nanmean(even)) * 1e6 if len(even) else float("nan"),
         "secondary_depth_ppm": (1 - np.nanmean(sec)) * 1e6 if len(sec) else float("nan"),
-        "depth_err_ppm": scatter / np.sqrt(n_in / 2) * 1e6,
+        "depth_err_ppm": depth_err * 1e6,
+        "depth_err_white_noise_ppm": formal_err * 1e6,
         "n_transits": int(len(np.unique(cyc[in_tr]))),
     }
 

@@ -147,7 +147,7 @@ def _followup_args(tic, period_d, t0, duration_h, depth_ppm):
 async def followup_start(tic: int, period_d: float, t0: float, duration_h: float, depth_ppm: float, ctx: Context) -> dict:
     """The decisive test, read-only: analyse every sector that observed the star for the same signal, then refine the period on the stitched
     baseline. It only reads public data and computes; nothing is created or changed anywhere. The analysis takes 1-5 minutes, so this
-    returns a job_id at once; read the result with job_status(job_id) about every 20 s."""
+    returns a job_id at once; call job_status(job_id), which waits and reports progress, until it says done."""
     a = _followup_args(tic, period_d, t0, duration_h, depth_ppm)
     k = store.key("followup", a)
     sid = store.session_id(dict(ctx.headers) if ctx.headers else {})
@@ -162,12 +162,26 @@ async def followup_start(tic: int, period_d: float, t0: float, duration_h: float
 
 
 @mcp.tool(title="Follow-up job status", annotations=READ)
-async def job_status(job_id: str, ctx: Context) -> list:
-    """State of a follow-up job: queued, running (with progress), failed, or done with the full result and stitched fold plot."""
+async def job_status(job_id: str, ctx: Context, wait_s: float = 20.0) -> list:
+    """Result of a follow-up job. Waits up to wait_s seconds (default 20, max 25) for it to finish, sending live progress
+    (which sector is being analysed) while it waits, so one or two calls are usually enough. Returns queued or running with
+    the latest progress line, failed with the reason, or done with the full result and the stitched fold plot."""
     if not re.fullmatch(r"[0-9a-f]{20}", job_id):
         raise ToolError("job_id is the 20-character id returned by followup_start")
-    state, hit = store.job_get("followup", job_id)
     sid = store.session_id(dict(ctx.headers) if ctx.headers else {})
+    deadline = time.time() + max(0.0, min(float(wait_s), 25.0))
+    last = None
+    while True:
+        state, hit = store.job_get("followup", job_id)
+        if hit is not None or state["state"] in ("failed", "unknown") or time.time() >= deadline:
+            break
+        if state.get("progress") and state["progress"] != last:
+            last = state["progress"]
+            try:
+                await ctx.report_progress(float(state.get("steps_done", 0)), None, last)
+            except Exception:
+                pass   # the client did not ask for progress, or the transport cannot stream it
+        await anyio.sleep(1.0)
     if hit is None:
         return [state]
     result, png = hit
@@ -253,7 +267,8 @@ def main():
         local = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
         sec = TransportSecuritySettings(allowed_hosts=local + hosts + [h + ":*" for h in hosts],
                                         allowed_origins=["http://127.0.0.1:*", "http://localhost:*"] + [f"https://{h}" for h in hosts])
-    mcp.run("streamable-http", host=args.host, port=args.port, stateless_http=True, json_response=True, transport_security=sec)
+    # responses are event streams so progress notifications can travel with a running call
+    mcp.run("streamable-http", host=args.host, port=args.port, stateless_http=True, json_response=False, transport_security=sec)
 
 
 if __name__ == "__main__":

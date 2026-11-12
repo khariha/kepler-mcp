@@ -6,6 +6,7 @@ from tesshunt import pipeline as P
 from tesshunt import cubes
 from tesshunt.sweep_core import _central_aperture, candidate_bar
 from tesshunt_mcp import store
+from tesshunt.star import position_at
 
 BRIGHT_TMAG = 9.0   # brighter than this the star's light spills past a 15-pixel cutout
 
@@ -69,6 +70,19 @@ def _star_tic(tic):
 
 
 _flat_lock = threading.Lock()
+_locks = collections.defaultdict(threading.RLock)   # astropy loads FITS lazily and is not safe when two threads touch one file
+
+
+def _lock(tic, sector):
+    with _flat_lock:
+        return _locks[(int(tic), int(sector))]
+
+
+def _cube(s, tic, sector, size):
+    """Cutout centred on where the star was during that sector. Fast-moving stars get their own cache file."""
+    ra, dec = position_at(s, sector)
+    moved = (((ra - s["ra"]) * np.cos(np.radians(s["dec"]))) ** 2 + (dec - s["dec"]) ** 2) ** 0.5 * 3600
+    return cubes.load_tpf(int(tic), int(sector), ra, dec, size, tag="_pm" if moved > 4 else "")
 _flats = collections.OrderedDict()
 
 
@@ -83,10 +97,12 @@ def _flat(tic, sector):
     if int(sector) not in s["sectors"]:
         raise ValueError(f"TIC {tic} was not observed in sector {sector}; observed sectors: {s['sectors']}")
     size, thr = _settings(s)
-    tpf = cubes.load_tpf(int(tic), int(sector), s["ra"], s["dec"], size)
-    if tpf is None:
-        raise LookupError(f"no full-frame-image cube available yet for sector {sector}")
-    flat, aper, n_glitch = _build_flat(tpf, thr)
+    with _lock(tic, sector):
+        tpf = _cube(s, tic, sector, size)
+        if tpf is None:
+            raise LookupError(f"no full-frame-image cube available yet for sector {sector}")
+        flat, aper, n_glitch = _build_flat(tpf, thr)
+        _ = tpf.wcs, tpf.flux, tpf.time   # finish the lazy loading while we hold the lock
     if len(flat) < 300:
         raise ValueError(f"only {len(flat)} usable cadences in sector {sector}; too few to search")
     cad = float(np.nanmedian(np.diff(tpf.time.value)) * 1440)
@@ -109,8 +125,13 @@ def _star_caveats(s):
         c.append(f"very faint star (Tmag {tm:.1f}): expect noise of 1% or more per cadence; only deep dips are detectable")
     if s.get("contratio") and s["contratio"] > 0.2:
         c.append(f"crowded field: catalogue contamination ratio {s['contratio']:.2f}; depths are diluted")
+    if s.get("rad_source") or s.get("mass_source"):
+        c.append("the catalogue lists no radius or mass for this star; values were estimated from its absolute K magnitude with M-dwarf relations (about 5-10% uncertain)")
     if not s.get("rad"):
-        c.append("no stellar radius in the catalogue: planet-size and duration checks fall back to solar values")
+        c.append("no stellar radius available: planet size is not computed and the duration check assumes the Sun's density")
+    pm = ((s.get("pmRA") or 0) ** 2 + (s.get("pmDEC") or 0) ** 2) ** 0.5
+    if pm > 300:
+        c.append(f"fast-moving star ({pm/1000:.1f} arcsec/yr): the cutout is centred on its position at the time of each sector")
     return c
 
 
@@ -204,7 +225,7 @@ def search_transits(tic, sector, min_period_d=0.3, max_period_d=13.0, min_snr=9.
         raise ValueError("need 0.2 <= min_period_d < max_period_d <= 30 days")
     max_period_d = min(max_period_d, baseline)
     r = P.search(flat, min_period=min_period_d, max_period=max_period_d, n_periods=15000,
-                 min_duration_hours=0.5, max_duration_hours=6.0, duration_step_hours=0.25)
+                 min_duration_hours=0.5, max_duration_hours=max(0.75, min(6.0, 0.5 * min_period_d * 24)), duration_step_hours=0.25)
     v = P.vet(flat, r.period, r.t0, r.duration)
     max_dur = P.max_duration_hours(r.period, _density(s))
     passes, fails = candidate_bar(r.snr, r.depth * 1e6, r.duration * 24, r.period, max_dur, v, min_snr=min_snr, min_depth_ppm=min_depth_ppm, cadence_h=cad / 60)
@@ -246,16 +267,17 @@ def search_transits(tic, sector, min_period_d=0.3, max_period_d=13.0, min_snr=9.
     return out, _png(fig)
 
 
-def _neighbors(s, tpf):
+def _neighbors(s, tpf, sector=None):
     """(table, target_x, target_y, source). Gaia DR3 from the ESA archive; the TESS Input Catalog when that is down."""
     import contextlib
     from tesshunt.vetting import gaia_neighbors, tic_neighbors
+    ra, dec = position_at(s, sector) if sector is not None else (s["ra"], s["dec"])
     try:
         with contextlib.redirect_stdout(io.StringIO()):   # astroquery prints the archive's error page
-            g, (tx, ty) = gaia_neighbors(s["ra"], s["dec"], tpf)
+            g, (tx, ty) = gaia_neighbors(ra, dec, tpf)
         return g, tx, ty, "Gaia DR3 (G band)"
     except Exception:
-        g, (tx, ty) = tic_neighbors(s["ra"], s["dec"], tpf)
+        g, (tx, ty) = tic_neighbors(ra, dec, tpf)
         return g, tx, ty, "TESS Input Catalog (TESS band); ESA Gaia archive was unreachable"
 
 
@@ -274,7 +296,8 @@ def _neighbor_rows(g, depth_ppm=None, within_px=3.0):
 
 def neighbors(tic, sector, depth_ppm=None):
     s, tpf, flat, aper, cad = _flat(tic, sector)
-    g, tx, ty, src = _neighbors(s, tpf)
+    with _lock(tic, sector):
+        g, tx, ty, src = _neighbors(s, tpf, sector)
     out = {"tic": int(tic), "sector": int(sector), "pixel_arcsec": 21.0, "neighbor_source": src,
            "neighbors_within_3px": _neighbor_rows(g, depth_ppm),
            "caveats": ["with Gaia G-band flux ratios, red neighbours count for more in the TESS band than listed",
@@ -288,6 +311,9 @@ def vet_signal(tic, sector, period_d, t0, duration_h):
     dur = duration_h / 24
     if not (0.1 < period_d < 30 and 0.2 <= duration_h <= 12):
         raise ValueError("period must be 0.1-30 d and duration 0.2-12 h")
+    if dur > 0.25 * period_d:
+        raise ValueError(f"a {duration_h:g} h dip is {100*dur/period_d:.0f}% of a {period_d:.3f} d period: that is a rotating or pulsating star, "
+                         "not a transit, and the transit tests do not apply. A transit lasts a few percent of the orbit.")
     v = P.vet(flat, period_d, t0, dur)
     t, f = flat.time.value, flat.flux.value
     in_tr = np.abs(((t - t0 + period_d / 2) % period_d) - period_d / 2) < dur / 2
@@ -295,8 +321,9 @@ def vet_signal(tic, sector, period_d, t0, duration_h):
         raise ValueError("fewer than 3 in-transit cadences at that period, epoch and duration in this sector")
     depth_ppm = float((np.nanmean(f[~in_tr]) - np.nanmean(f[in_tr])) * 1e6)
     err = v["depth_err_ppm"]
-    c = P.centroid_test(tpf, period_d, t0, dur, aperture=aper)
-    g, tx, ty, src = _neighbors(s, tpf)
+    with _lock(tic, sector):
+        c = P.centroid_test(tpf, period_d, t0, dur, aperture=aper)
+        g, tx, ty, src = _neighbors(s, tpf, sector)
     row = types.SimpleNamespace(depth_ppm=depth_ppm, secondary_ppm=v["secondary_depth_ppm"], depth_err_ppm=err, period_d=period_d)
     verdict, reasons, exp_shift = _verdict(row, c, g)
     any_sec, any_ph = v["secondary_any_phase_ppm"], v["secondary_any_phase_at"]
@@ -308,7 +335,19 @@ def vet_signal(tic, sector, period_d, t0, duration_h):
         reasons.append(f"no secondary at any phase 0.15-0.85 (deepest box {any_sec:.0f} ppm at {any_ph:.2f}, {any_sig:.1f} sigma against the other phases)")
     max_dur = P.max_duration_hours(period_d, _density(s))
     passes, fails = candidate_bar(depth_ppm / err if err > 0 else float("nan"), depth_ppm, duration_h, period_d, max_dur, v, min_snr=0, min_depth_ppm=0, cadence_h=cad / 60)
-    out = {"tic": int(tic), "sector": int(sector), "verdict": verdict, "reasons": reasons,
+    location = verdict
+    shape_fails = [x for x in fails if not x.startswith("secondary")]
+    if v.get("secondary_single_event"):
+        reasons.insert(0, f"one deep event ({any_sec:.0f} ppm) at phase {any_ph:.2f}, seen in {v['secondary_orbits_showing']} of {v['secondary_orbits_covering']} orbits here: "
+                          "an eclipse and a data glitch look the same in one sector, so check that phase in other sectors (followup_start does)")
+    if verdict != "eclipsing_binary":
+        if np.isfinite(err) and err > 0 and depth_ppm / err < 4:
+            verdict = "not_significant"
+            reasons.insert(0, f"the dip is only {depth_ppm/err:.1f} sigma in this sector against the measured scatter")
+        elif shape_fails:
+            verdict = "not_transit_shaped"
+            reasons[0:0] = shape_fails
+    out = {"tic": int(tic), "sector": int(sector), "verdict": verdict, "location_test": location, "reasons": reasons,
            "depth_ppm": depth_ppm, "depth_err_ppm": err, "depth_sigma": depth_ppm / err if err > 0 else None,
            "n_transits": v["n_transits"], "odd_depth_ppm": v["odd_depth_ppm"], "even_depth_ppm": v["even_depth_ppm"],
            "secondary_at_half_phase_ppm": v["secondary_depth_ppm"], "secondary_any_phase_ppm": any_sec, "secondary_any_phase_at": any_ph,
@@ -320,7 +359,7 @@ def vet_signal(tic, sector, period_d, t0, duration_h):
            "n_in_transit": c["n_in"], "n_out_of_transit": c["n_out"],
            "neighbor_source": src, "neighbors_within_3px": _neighbor_rows(g, depth_ppm),
            "radius_earth_if_planet": P.planet_radius_earths(max(depth_ppm, 0) / 1e6, s["rad"]) if s.get("rad") else None,
-           "verdict_values": "on_target, likely_on_target, blended, anomaly, off_target, untestable, eclipsing_binary",
+           "verdict_values": "eclipsing_binary, not_significant, not_transit_shaped, then the location result: on_target, likely_on_target, blended, anomaly, off_target, untestable",
            "caveats": _star_caveats(s) + ["one sector only: a verdict here is provisional until follow-up repeats it",
                        "an on_target verdict does not rule out a bound or background star inside the same pixel",
                        CANDIDATE_NOTE]}
@@ -365,6 +404,30 @@ def fold_plot(tic, sectors, period_d, t0):
     return {"tic": int(tic), "sectors": used, "period_d": period_d, "t0": t0, "fold_binned_hours_flux": series, "time_note": TIME_NOTE}, _png(fig)
 
 
+def _box_stats(t, f, period, t0, dur):
+    """Depth of the in-transit box and how far it stands out from boxes of the same width at other phases.
+    Returns (depth_ppm, robust scatter of off-transit boxes in ppm, n_in). The scatter is empirical, so correlated
+    noise and leftover systematics count against the signal instead of being ignored."""
+    ph = ((t - t0) % period) / period
+    in_tr = np.abs(((t - t0 + period / 2) % period) - period / 2) < dur / 2
+    n_in = int(in_tr.sum())
+    if n_in < 3:
+        return None, None, n_in
+    base = np.nanmean(f[~in_tr])
+    depth = float((base - np.nanmean(f[in_tr])) * 1e6)
+    boxes = []
+    for c in np.arange(0.1, 0.901, max(dur / period, 0.01)):
+        w = np.abs(((ph - c + 0.5) % 1) - 0.5) < (dur / period) / 2
+        if w.sum() >= max(3, n_in // 2):
+            boxes.append((base - np.nanmean(f[w])) * 1e6)
+    if len(boxes) >= 8:
+        b = np.array(boxes)
+        scatter = float(1.4826 * np.median(np.abs(b - np.median(b))))
+    else:
+        scatter = float(np.nanstd(f[~in_tr]) / np.sqrt(n_in) * 1e6) * 1.5   # too few boxes: inflate the white-noise error
+    return depth, max(scatter, 1e-9), n_in
+
+
 def followup(tic, period_d, t0, duration_h, depth_ppm, progress=lambda m: None):
     from tesshunt.followup import recover
     s = _star_tic(tic)
@@ -372,7 +435,12 @@ def followup(tic, period_d, t0, duration_h, depth_ppm, progress=lambda m: None):
     skipped = sectors[MAX_FOLLOWUP_SECTORS:]
     sectors = sectors[:MAX_FOLLOWUP_SECTORS]
     size, thr = _settings(s)
-    loader = lambda sec: cubes.load_tpf(int(tic), int(sec), s["ra"], s["dec"], size)
+    if duration_h / 24 > 0.25 * period_d:
+        raise ValueError(f"a {duration_h:g} h dip is {100*duration_h/24/period_d:.0f}% of a {period_d:.3f} d period: not transit-shaped, so there is nothing to follow up")
+
+    def loader(sec):
+        with _lock(tic, sec):
+            return _cube(s, tic, sec, size)
     r = recover(s["ra"], s["dec"], sectors, period_d, t0, duration_h / 24, depth_ppm, cutout=size, loader=loader, log=progress,
                 flat_fn=lambda tpf: _build_flat(tpf, thr)[0])
     ok, det, joint = r["ok"], r["detected"], r["joint"]
@@ -384,38 +452,42 @@ def followup(tic, period_d, t0, duration_h, depth_ppm, progress=lambda m: None):
         Pj, tj, dj, depj = joint["period"], joint["t0"], joint["duration_h"] / 24, joint["depth_ppm"]
         for flat in r["flats"]:
             sec = int(flat.meta.get("SECTOR", -1))
-            t, f = flat.time.value, flat.flux.value
-            in_tr = np.abs(((t - tj + Pj / 2) % Pj) - Pj / 2) < dj / 2
-            if in_tr.sum() < 3:
+            depth, err, n_in = _box_stats(flat.time.value, flat.flux.value, Pj, tj, dj)
+            if depth is None:
                 checks.append({"sector": sec, "result": "no_transit_covered"}); continue
-            err = float(np.nanstd(f[~in_tr]) / np.sqrt(in_tr.sum()) * 1e6)
-            depth = float((np.nanmean(f[~in_tr]) - np.nanmean(f[in_tr])) * 1e6)
-            expected_sigma = depj / err if err > 0 else 0.0
-            if depth / err >= 3 and 0.5 <= depth / depj <= 2.0:
+            expected_sigma = depj / err
+            if depth / err >= 4 and 0.5 <= depth / depj <= 2.0:
                 res = "agrees"; agree.append(sec)
             elif expected_sigma >= 5 and depth < 0.4 * depj:
                 res = "contradicts"; contradict.append(sec)
             else:
                 res = "too_noisy_to_tell"
-            checks.append({"sector": sec, "depth_ppm": depth, "depth_err_ppm": err, "depth_sigma": depth / err if err > 0 else None,
-                           "expected_sigma": expected_sigma, "result": res})
+            checks.append({"sector": sec, "depth_ppm": depth, "box_scatter_ppm": err, "depth_sigma": depth / err,
+                           "expected_sigma": expected_sigma, "n_in_transit": n_in, "result": res})
+        st = r["stitched"]
+        jd, je, _ = _box_stats(st.time.value, st.flux.value, Pj, tj, dj) if st is not None else (None, None, 0)
+        joint["depth_sigma_empirical"] = (jd / je) if jd is not None else None
+    joint_sigma = (joint or {}).get("depth_sigma_empirical") or 0.0
     if usable == 0:
         status = "no_usable_sectors"
     elif usable == 1 or not joint:
         status = "single_sector_only"
     elif contradict:
         status = "does_not_repeat"
-    elif len(agree) >= 2:
+    elif len(agree) >= 2 and joint_sigma >= 7:
         status = "repeats"
+    elif joint_sigma < 5:
+        status = "not_significant"
     else:
         status = "inconclusive"
     out = {"tic": int(tic), "input": {"period_d": period_d, "t0": t0, "duration_h": duration_h, "depth_ppm": depth_ppm},
            "sectors_searched": sectors, "sectors_skipped_over_limit": skipped, "usable_sectors": usable, "status": status,
            "sectors_agreeing": agree, "sectors_contradicting": contradict, "fixed_ephemeris_check": checks,
            "found_by_independent_search_in": det.sector.tolist() if recovered else [],
-           "status_rule": "at the stitched period and epoch, a sector agrees when its depth is over 3 sigma and within a factor 2 of the stitched depth; "
+           "status_rule": "depths are judged against the scatter of same-width boxes at other phases, so correlated noise counts against the signal. "
+                          "At the stitched period and epoch a sector agrees when its dip is over 4 sigma and within a factor 2 of the stitched depth; "
                           "it contradicts when it had the sensitivity (expected over 5 sigma) but shows under 40% of the depth. "
-                          "repeats = at least 2 agree and none contradict",
+                          "repeats = at least 2 agree, none contradict, and the stitched dip is over 7 sigma; not_significant = stitched dip under 5 sigma",
            "per_sector": r["per_sector"].to_dict("records"), "joint": joint, "time_note": TIME_NOTE, "caveats": [CANDIDATE_NOTE]}
     if joint:
         err = joint["err"]
@@ -448,6 +520,8 @@ def followup(tic, period_d, t0, duration_h, depth_ppm, progress=lambda m: None):
             out["caveats"].insert(0, "odd and even depths differ in the stitched data: possible eclipsing binary at twice the period")
     if status == "does_not_repeat":
         out["caveats"].insert(0, f"sector(s) {contradict} had the sensitivity to see this dip and did not: a real orbiting body transits every period")
+    if status == "not_significant":
+        out["caveats"].insert(0, "the stitched dip is under 5 sigma against the scatter at other phases: this is what noise looks like after a period search")
     if status == "inconclusive":
         out["caveats"].insert(0, "fewer than two sectors show the dip clearly and none rules it out: more data or a deeper look is needed")
     png = None
