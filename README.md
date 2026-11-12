@@ -10,9 +10,9 @@ git clone https://github.com/khariha/tess-hunt-mcp.git && cd tess-hunt-mcp
 pip install -e .
 claude mcp add tess-hunt -- tesshunt-mcp --stdio
 ```
-Or run it as an HTTP server and connect to that:
+Or run it as a local HTTP server. `start.py` checks the dependencies, starts it, and prints the connect command:
 ```bash
-tesshunt-mcp --host 127.0.0.1 --port 8000
+python start.py
 claude mcp add --transport http tess-hunt http://127.0.0.1:8000/mcp
 ```
 Then ask:
