@@ -28,7 +28,20 @@ def _db():
     c = sqlite3.connect(os.path.join(store.DATA, "leads.db"), timeout=30)
     c.row_factory = sqlite3.Row
     c.executescript(SCHEMA)
+    have = {r["name"] for r in c.execute("pragma table_info(leads)")}
+    for col in ("found_by", "patch_id"):
+        if col not in have:
+            c.execute(f"alter table leads add column {col} text")
     return c
+
+
+def add(d, found_by=None, patch_id=None):
+    """Queue one verified lead from a searched patch. Returns its id, or None if that signal is already queued."""
+    with _lock, _db() as c:
+        cur = c.execute("insert or ignore into leads (tic, sector, period_d, t0, duration_h, depth_ppm, snr, star, created, found_by, patch_id) values (?,?,?,?,?,?,?,?,?,?,?)",
+                        (int(d["tic"]), int(d["sector"]), round(float(d["period_d"]), 6), round(float(d["t0"]), 5), round(float(d["duration_h"]), 2),
+                         round(float(d["depth_ppm"]), 0), float(d.get("snr") or 0), json.dumps(d.get("star") or {}), time.time(), found_by, patch_id))
+        return cur.lastrowid if cur.rowcount else None
 
 
 def _hash(hunter_id):
@@ -70,7 +83,7 @@ def count():
 def join(handle):
     handle = (handle or "").strip()
     if not HANDLE.fullmatch(handle):
-        raise LeadError("a hunter name is 3 to 20 characters: letters, digits, dash or underscore, starting with a letter or digit")
+        raise LeadError("a planet-hunter name is 3 to 20 characters: letters, digits, dash or underscore, starting with a letter or digit")
     hunter_id = secrets.token_urlsafe(9)
     with _lock, _db() as c:
         if c.execute("select 1 from hunters where handle = ?", (handle,)).fetchone():
@@ -114,6 +127,8 @@ def _lead_dict(r):
     size, re = planet_size(star, r["depth_ppm"])
     return {"lead_id": r["id"], "tic": r["tic"], "sector": r["sector"], "period_d": r["period_d"], "t0": r["t0"],
             "duration_h": r["duration_h"], "depth_ppm": r["depth_ppm"], "search_snr": r["snr"], "star": star,
+            "found_by": r["found_by"] if "found_by" in r.keys() else None,
+            "practice": bool(DEV and not (r["patch_id"] if "patch_id" in r.keys() else None)),
             "star_type": star_type(star), "size_if_planet": size, "radius_earth_if_planet": round(re, 2) if re else None}
 
 
@@ -139,7 +154,7 @@ def claim_next(hunter_id, now=None, want_star=None, want_size=None):
                         (select count(*) from claims k where k.lead_id = l.id) nc
             from leads l where l.status = 'open'
               and not exists (select 1 from vets v where v.lead_id = l.id and v.hunter = ?)
-            order by (nv + nc >= 2), nv desc, nc asc, l.snr desc, l.id""", (me,)).fetchall()
+            order by (l.patch_id is null), (nv + nc >= 2), nv desc, nc asc, l.snr desc, l.id""", (me,)).fetchall()
         for row in rows:
             if _wanted(_lead_dict(row), want_star, want_size):
                 c.execute("insert or replace into claims values (?,?,?)", (row["id"], me, now + CLAIM_SECONDS))
@@ -166,6 +181,12 @@ def get(lead_id):
         if not r:
             raise LeadError(f"there is no lead {lead_id}")
         return _lead_dict(r) | {"status": r["status"]}
+
+
+def has_real():
+    """True once any lead has come from a searched patch."""
+    with _lock, _db() as c:
+        return c.execute("select 1 from leads where patch_id is not null limit 1").fetchone() is not None
 
 
 def record(hunter_id, lead_id, verdict, hold, deciding_test, reason, auto_status, tools_seen, now=None):
@@ -206,8 +227,12 @@ def stats(hunter_id):
         mix = {}
         for r in rows:
             mix[r["verdict"]] = mix.get(r["verdict"], 0) + 1
-        return {"handle": me, "leads_vetted": len(rows), "verdicts": mix,
-                "on_surviving_leads": sum(1 for r in rows if r["status"] == "surviving" and r["verdict"] == "candidate")}
+        found = c.execute("select count(*) from leads where found_by = ?", (me,)).fetchone()[0]
+        out = {"handle": me, "leads_vetted": len(rows), "verdicts": mix,
+               "on_surviving_leads": sum(1 for r in rows if r["status"] == "surviving" and r["verdict"] == "candidate")}
+        if found:
+            out["leads_found_by_your_sweeps"] = found
+        return out
 
 
 def board(limit=50):
@@ -217,7 +242,7 @@ def board(limit=50):
         surviving = []
         for l in c.execute("select * from leads where status = 'surviving' order by id desc limit ?", (limit,)):
             who = [v["hunter"] for v in c.execute("select hunter from vets where lead_id = ? and verdict = 'candidate' order by ts", (l["id"],))]
-            surviving.append({"lead_id": l["id"], "tic": l["tic"], "period_d": l["period_d"], "depth_ppm": l["depth_ppm"], "vetted_by": who})
+            surviving.append({"lead_id": l["id"], "tic": l["tic"], "period_d": l["period_d"], "depth_ppm": l["depth_ppm"], "found_by": l["found_by"], "vetted_by": who})
         pending = []
         for l in c.execute("""select l.* from leads l where l.status = 'open' and exists
                               (select 1 from vets v where v.lead_id = l.id and v.verdict = 'candidate') order by l.id desc limit ?""", (limit,)):
@@ -229,4 +254,4 @@ def board(limit=50):
                 "hunters": c.execute("select count(*) from hunters").fetchone()[0],
                 "surviving": surviving, "awaiting_second_vet": pending, "most_active": top,
                 "note": ("DEVELOPMENT DATA: these leads are well-known stars used to test the hunting loop, not real leads. " if DEV else "") +
-                        "Surviving leads are unconfirmed planet candidates found by volunteers. Nothing here has been confirmed or submitted to any archive."}
+                        "Surviving leads are unconfirmed planet candidates found by volunteer planet hunters. Nothing here has been confirmed or submitted to any archive."}

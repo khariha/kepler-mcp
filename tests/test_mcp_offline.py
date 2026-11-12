@@ -109,7 +109,8 @@ def test_server_registers_tools_and_guide():
     names = anyio.run(go)
     assert names == {"resolve_star", "catalog_check", "light_curve", "search_transits", "vet_signal", "neighbors", "fold_plot",
                      "followup_start", "job_status", "report_verdict", "read_guide",
-                     "welcome", "lesson", "join", "next_lead", "submit_vet", "board", "my_progress"}
+                     "welcome", "lesson", "join", "next_lead", "submit_vet", "board", "my_progress",
+                     "sky_map", "open_patch", "patch_status"}
     g = server._guide()
     assert "eccentric" in g and "TIC " not in g.replace("TESS Input Catalog", "")
     assert "sweep" not in " ".join(names) and "mcmc" not in " ".join(names)
@@ -240,3 +241,98 @@ def test_lead_filters_and_availability(tmp_data):
     assert y["tic"] == 2 and y["resumed"] is False
     assert leads.claim_next(h, want_size="rocky")["tic"] == 3
     assert leads.claim_next(h, want_star="white") is None
+
+
+# ---------------- sky map ----------------
+def _sky(tmp_data, n_stars=7, size=3):
+    from tesshunt_mcp import sky, leads
+    sky.PATCH_SIZE = size
+    stars = [{"tic": 1000 + i, "ra": 100 + 0.1 * i, "dec": -30 + 0.01 * i, "Tmag": 13.0, "Teff": 3300, "rad": 0.4} for i in range(n_stars)]
+    assert sky.build_ccd(7, 2, 3, stars) == 3 and sky.build_ccd(7, 2, 3, stars) == 0
+    return sky, leads
+
+
+def _row(tic, **kw):
+    r = dict(tic=tic, status="ok", period_d=3.0, t0=1500.0, duration_h=1.2, max_duration_h=1.5, depth_ppm=200, depth_err_ppm=300, snr=4.0, n_transits=8, cadence_min=30)
+    r.update(kw); return r
+
+
+def test_patches_are_built_claimed_and_released(tmp_data):
+    sky, leads = _sky(tmp_data)
+    s = sky.summary()
+    assert s["totals"]["patches"] == 3 and s["totals"]["unopened"] == 3 and s["detectors"][0]["ccd"] == 3
+    a, b = leads.join("ann")["hunter_id"], leads.join("bob")["hunter_id"]
+    p = sky.claim(a, now=1000)
+    assert p["id"] == "s7-c2-3-01" and sky.claim(a, now=1001)["resumed"]
+    with pytest.raises(sky.SkyError, match="already claimed by ann"):
+        sky.claim(b, "s7-c2-3-01", now=1002)
+    assert sky.claim(b, now=1002)["id"] == "s7-c2-3-02"
+    assert len(sky.stars_for(a, "s7-c2-3-01")["stars"]) == 3
+    with pytest.raises(sky.SkyError, match="not held by you"):
+        sky.stars_for(b, "s7-c2-3-01")
+    assert sky.claim(b, "s7-c2-3-01", now=1000 + sky.CLAIM_SECONDS + 1)["opened_by"] == "bob"      # ann's hold lapsed
+
+
+def test_lead_bar_keeps_transit_shapes_and_drops_rotators():
+    from tesshunt_mcp import sky
+    assert sky.lead_bar(_row(1, snr=12, depth_ppm=9000, depth_err_ppm=600))
+    assert not sky.lead_bar(_row(1))                                                              # weak
+    assert not sky.lead_bar(_row(1, snr=12, depth_ppm=9000, depth_err_ppm=600, duration_h=6.0))    # too long
+    assert not sky.lead_bar(_row(1, snr=12, depth_ppm=9000, depth_err_ppm=600, period_d=0.3, duration_h=1.2, max_duration_h=2.0))   # duty cycle
+    assert not sky.lead_bar(_row(1, snr=12, depth_ppm=9000, depth_err_ppm=600, n_transits=1))
+    assert not sky.lead_bar(_row(1, status="error: boom")) and not sky.lead_bar({"tic": 1, "status": "ok", "snr": "nan"})
+
+
+def test_upload_is_validated_and_flags_only_real_shapes(tmp_data):
+    sky, leads = _sky(tmp_data)
+    a = leads.join("ann")["hunter_id"]
+    pid = sky.claim(a)["id"]
+    tics = [s["tic"] for s in sky.stars_for(a, pid)["stars"]]
+    with pytest.raises(sky.SkyError, match="has to finish"):
+        sky.submit(a, pid, [_row(tics[0])])
+    with pytest.raises(sky.SkyError, match="one row per star"):
+        sky.submit(a, pid, [_row(t) for t in range(50)])
+    rows = [_row(tics[0], snr=15, depth_ppm=9000, depth_err_ppm=500), _row(tics[1]), _row(tics[2]), _row(999999, snr=99, depth_ppm=50000, depth_err_ppm=100)]
+    flagged, quiet = sky.submit(a, pid, rows)
+    assert [f["tic"] for f in flagged] == [tics[0]] and quiet in tics[1:]                          # the star not in the patch is ignored
+    assert sky.get(pid)["status"] == "verifying"
+    out = sky.finish(pid, [{"tic": tics[0]}])
+    assert out == {"patch_id": pid, "status": "done", "opened_by": "ann", "n_stars": 3, "n_leads": 1}
+    s = sky.summary()
+    assert s["totals"]["searched"] == 1 and s["totals"]["leads_found"] == 1 and s["openers"][0]["handle"] == "ann"
+
+
+def test_rejected_patch_reopens(tmp_data):
+    sky, leads = _sky(tmp_data)
+    a = leads.join("ann")["hunter_id"]
+    pid = sky.claim(a)["id"]
+    tics = [s["tic"] for s in sky.stars_for(a, pid)["stars"]]
+    sky.submit(a, pid, [_row(t) for t in tics])
+    assert sky.finish(pid, [], rejected_reason="upload disagrees with the hub's own search")["status"] == "rejected"
+    p = sky.get(pid)
+    assert p["status"] == "unopened" and p["opened_by"] is None and "disagrees" in p["note"]
+
+
+def test_claim_limit(tmp_data):
+    sky, leads = _sky(tmp_data)
+    a = leads.join("ann")["hunter_id"]
+    sky.claim(a, "s7-c2-3-01"); sky.claim(a, "s7-c2-3-02")
+    with pytest.raises(sky.SkyError, match="finish one first"):
+        sky.claim(a, "s7-c2-3-03")
+
+
+def test_helper_worker_is_importable_and_real_leads_come_first(tmp_data):
+    import pickle
+    from kepler_sweep.worker import search_one
+    assert pickle.loads(pickle.dumps(search_one)) is search_one          # worker processes must be able to load it by name
+    from kepler_sweep.__main__ import looks_like_a_signal
+    assert looks_like_a_signal(_row(1, snr=12, depth_ppm=9000, depth_err_ppm=600)) and not looks_like_a_signal(_row(1)) and not looks_like_a_signal({"status": "ok"})
+    leads = _leads(tmp_data, 2)                                           # two file-loaded leads
+    assert not leads.has_real()
+    new = leads.add({"tic": 555, "sector": 7, "period_d": 1.5, "t0": 1500.0, "duration_h": 1.0, "depth_ppm": 8000, "snr": 9.0, "star": {"Teff": 3300, "rad": 0.4}},
+                    found_by="cara", patch_id="s7-c1-1-02")
+    assert new and leads.has_real()
+    assert leads.add({"tic": 555, "sector": 7, "period_d": 1.5, "t0": 1500.0, "duration_h": 1.0, "depth_ppm": 8000, "snr": 9.0}) is None   # no duplicates
+    h = leads.join("dan")["hunter_id"]
+    first = leads.claim_next(h)
+    assert first["tic"] == 555 and first["found_by"] == "cara" and first["practice"] is False     # a searched-patch lead outranks file leads

@@ -6,6 +6,7 @@ WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY tesshunt ./tesshunt
 COPY tesshunt_mcp ./tesshunt_mcp
+COPY kepler_sweep ./kepler_sweep
 RUN pip install --no-cache-dir -e .
 RUN useradd -m app && mkdir -p /app/data && chown -R app /app
 USER app

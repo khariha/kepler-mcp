@@ -7,6 +7,8 @@ MCP server for finding and vetting transiting planet candidates in TESS full-fra
 - tesshunt_mcp/      core.py (tools as plain functions), store.py (cache, traces, rate limits, jobs), server.py (MCP wiring), guide.md (vetting guide served to clients)
 - tesshunt_mcp/leads.py  the leads queue and public board (SQLite); ops/ holds leads files (dev_leads.jsonl = known stars for testing)
 - tests/             offline tests; scripts/warm.py is the live smoke test
+- tesshunt_mcp/sky.py  patches of sky: mapping, claims, uploads; tesshunt/targets.py picks a detector's unclaimed stars
+- kepler_sweep/      the local helper hunters run to search a patch (command and --mcp modes); worker.py is the per-star search
 - start.py           one-command local launcher
 - deploy/            Docker + Caddy runbook
 
@@ -40,4 +42,8 @@ MCP server for finding and vetting transiting planet candidates in TESS full-fra
 - A known planet host could have been listed as a "surviving candidate" → the consensus rule looked only at vetting and follow-up → the server's reading returns known_object when the cached catalog check lists the star, except for development leads, which the board labels as such.
 - A Haiku client told the user Pi Mensae is "18 light-years away" (it is 18 parsecs, 60 light-years) → the tool returned a bare `d` → every quantity a client may read aloud carries its unit in the field name or a `units` map.
 - The same client called a stacked 333 ppm off-phase dip "a possible second body" though the server had judged it noise → the number was prominent and the judgement was buried in caveats → put the conclusion next to the number (secondary_check.conclusion).
+- The helper reported "0 of 5 stars usable" and uploaded nothing → started with `python -m`, its worker function lived in `__main__`, which spawned processes cannot import; the failures were swallowed → the worker lives in kepler_sweep/worker.py, and a run where most stars fail exits with the first real error.
+- Every lead was labelled "practice", including one from a real searched patch → the practice flag was global to the queue → practice is per lead (file-loaded with no patch), and patch leads are handed out first.
+- Do not quote odds that were never measured ("one patch in three has a signal") → say "many patches find nothing" until the hub has real counts to report.
+- Measured on a laptop (8 workers, home connection): about 22 stars a minute, 20 s per star, download-bound → patch size 150 for a seven-minute search; mapping one detector into patches takes 5-6 minutes of catalogue queries.
 

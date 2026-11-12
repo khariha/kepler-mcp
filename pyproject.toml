@@ -20,10 +20,11 @@ dev = ["pytest"]
 
 [project.scripts]
 kepler-mcp = "tesshunt_mcp.server:main"
+kepler-sweep = "kepler_sweep.__main__:main"
 tesshunt-mcp = "tesshunt_mcp.server:main"
 
 [tool.setuptools]
-packages = ["tesshunt", "tesshunt_mcp"]
+packages = ["tesshunt", "tesshunt_mcp", "kepler_sweep"]
 
 [tool.setuptools.package-data]
 tesshunt_mcp = ["guide.md"]

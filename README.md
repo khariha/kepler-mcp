@@ -6,7 +6,7 @@ Kepler is an MCP server that lets Claude, or any MCP client, search NASA's TESS 
 
 Three ways in:
 - **Learn.** Find a planet astronomers already know about, starting from raw telescope pixels, with every step explained. About ten minutes.
-- **Hunt.** Take a real lead: a star where a bulk search saw a repeating dip that nobody has checked. Try to break it. If it survives your tests and a second hunter's, it goes on the public board with your name. Most leads are impostors; expect roughly 1 in 10 to survive.
+- **Hunt.** Take a real lead: a star where a bulk search saw a repeating dip that nobody has checked. Try to break it. If it survives your tests and a second planet hunter's, it goes on the public board with your name. Most leads are impostors; expect roughly 1 in 10 to survive.
 - **Bring your own star.** Name any star TESS observed and run the full check.
 
 It reports candidates, never planets: confirmation needs other telescopes.
@@ -27,14 +27,32 @@ Then open Claude and say: **"Open Kepler. Let's hunt for planets."**
 |---|---|
 | `welcome()` | the greeting and the three paths |
 | `lesson()` | the guided five-step lesson on a known planet |
-| `join(handle)` | pick a hunter name; returns a `hunter_id` to keep for later sessions |
+| `join(handle)` | pick a planet-hunter name; returns a `hunter_id` to keep for later sessions |
 | `next_lead(hunter_id)` | one unchecked lead, with the exact values to test |
 | `submit_vet(hunter_id, lead_id, verdict, reason, ...)` | your verdict, accepted only after the tests have been run |
 | `board()`, `my_progress(hunter_id)` | standings and your tally |
 
 The board is also a web page at `/board` (JSON at `/board.json`).
 
-**How the board stays honest.** A verdict is refused until the vetting and the multi-sector follow-up have actually been run on the lead's exact values. The server keeps its own reading of every lead from those results. A lead is listed as surviving only when two different hunters call it a candidate **and** the server's reading agrees, so nobody can vote an impostor onto the board. Nothing is submitted to any archive.
+## Opening a patch of sky
+Leads come from searching stars nobody has searched, and planet hunters do that themselves. The hub divides each open TESS sector into **patches** of about 150 faint red dwarfs. `open_patch` hands one to a hunter with a single command:
+
+```bash
+kepler-sweep s7-c1-1-02 --hunter <hunter_id> --hub https://your-kepler-host
+```
+That helper runs on the hunter's own computer for about seven minutes. It gets the star list from the hub, reads each star's pixels straight from NASA's public files, runs the search, and uploads one row of numbers per star. An interrupted run resumes. The patch is then stored for everyone and never searched again.
+
+| Tool | What it does |
+|---|---|
+| `sky_map(sector?)` | which patches are searched, unopened, or in progress, and leads found |
+| `open_patch(hunter_id, patch_id?)` | claim a patch for two hours and get the command |
+| `patch_status(patch_id)` | what came back |
+
+**The hub checks before it believes.** Uploaded results are untrusted. Every signal an upload reports is re-run by the hub itself, and only signals it reproduces become leads, credited to the hunter whose computer found them. One quiet star per patch is re-run too; an upload that disagrees is rejected and the patch reopens.
+
+`kepler-sweep --mcp` runs the same helper as a local MCP server with one tool, `sweep_patch`, for people who would rather add it once than paste commands.
+
+**How the board stays honest.** A verdict is refused until the vetting and the multi-sector follow-up have actually been run on the lead's exact values. The server keeps its own reading of every lead from those results. A lead is listed as surviving only when two different planet hunters call it a candidate **and** the server's reading agrees, so nobody can vote an impostor onto the board. Nothing is submitted to any archive.
 
 Prompts: `start` (welcome), `hunt` (the guided loop over leads), `check_star(star)` (one star end to end).
 
@@ -83,7 +101,7 @@ Public archives only: TESS full-frame-image cubes and the TESS Input Catalog fro
 pip install -e ".[dev]" && pytest          # offline tests
 python scripts/warm.py http://127.0.0.1:8000/mcp   # live smoke test against a running server
 ```
-Leads come from `ops/`: `ops/dev_leads.jsonl` holds three well-known stars for testing; a real queue goes in `ops/leads.jsonl`.
+`ops/dev_leads.jsonl` holds three well-known practice stars. Real leads come from searched patches. Hub settings: `KEPLER_OPEN_SECTORS` (default "7 8"), `KEPLER_PATCH_SIZE` (150), `KEPLER_PATCHES_PAUSED=1`, `KEPLER_EXCLUDE` (a file of TICs that must never be searched), `KEPLER_PUBLIC_URL`.
 ```bash
 ```
 MIT licence.

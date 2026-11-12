@@ -14,7 +14,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
-from tesshunt_mcp import core, leads, store
+from tesshunt_mcp import core, leads, sky, store
 
 warnings.filterwarnings("ignore")
 # Every tool only reads public archives and computes; nothing is created, changed or sent on the caller's behalf.
@@ -25,7 +25,7 @@ _slots = None   # created inside the event loop
 
 INSTRUCTIONS = """Kepler: hunt for transiting planet CANDIDATES in NASA TESS data, with a guide at your side. (Named for Johannes Kepler; the data is from the TESS mission, not the Kepler space telescope.)
 
-First contact: when the user arrives, greets you, or says something like "let's start" or "let's hunt", call `welcome` and offer its two paths in your own words: Learn (find a known planet from raw data, explained step by step; call `lesson`) or Hunt (take a real unchecked lead, try to break it, get credited on the public board; call `join` then `next_lead`, which can filter by star colour or planet size when the user has a preference). If the user names a specific star instead, check that star with the `check_star` procedure.
+First contact: when the user arrives, greets you, or says something like "let's start" or "let's hunt", call `welcome` and offer its two paths in your own words: Learn (find a known planet from raw data, explained step by step; call `lesson`) or Hunt (take a real unchecked lead, try to break it, get credited on the public board; call `join` then `next_lead`, which can filter by star colour or planet size when the user has a preference; when no lead is waiting, `open_patch` lets the user's own computer search a fresh patch of sky). If the user names a specific star instead, check that star with the `check_star` procedure.
 
 Hand-holding: most results carry `next` (the sensible next step, with exact values to pass) and `plain` (what the result means in one sentence). Follow `next` unless the user asks for something else, and explain each step in plain words before showing numbers. Ask the user a question now and then; this is their hunt.
 
@@ -37,7 +37,9 @@ Rules for whoever reads the results:
 - Be honest about odds: most leads are impostors, and most stars show nothing.
 
 Times are BTJD (BJD - 2457000). Depths are ppm. Calls are rate limited per user; cached answers are free.
-Privacy: tool names, arguments and numeric results are logged with an anonymous daily-rotating id to improve the tools; the log may be used to train open models. No IP address, account, prompt or model reasoning is stored. A hunter handle, if the user picks one, is shown on the public board."""
+Privacy: tool names, arguments and numeric results are logged with an anonymous daily-rotating id to improve the tools; the log may be used to train open models. No IP address, account, prompt or model reasoning is stored. A planet-hunter name, if the user picks one, is shown on the public board.
+
+Vocabulary: call the user a "planet hunter". What they find is always a "planet candidate"."""
 
 mcp = MCPServer("kepler", title="Kepler: hunt for planets in NASA TESS data", instructions=INSTRUCTIONS,
                 website_url="https://github.com/khariha/kepler-mcp", version="0.2.0")
@@ -228,11 +230,11 @@ def _lead_call(fn, *a, **k):
 
 @mcp.tool(title="Join the hunt", annotations=NOTE)
 async def join(handle: str, ctx: Context) -> dict:
-    """Register a hunter name (3-20 letters, digits, dash or underscore) to take leads and be credited on the public board.
+    """Register a planet-hunter name (3-20 letters, digits, dash or underscore) to take leads and be credited on the public board.
     Returns a hunter_id: tell the user to keep it, because it is how they continue as the same hunter in a later session."""
     out = _lead_call(leads.join, handle)
     store.trace(_sid(ctx), "join", {"handle": out["handle"]}, {"joined": True}, 0, False)
-    return out | {"plain": f"You are hunting as {out['handle']}. Keep your hunter_id; it is how you pick up where you left off.",
+    return out | {"plain": f"You are now a planet hunter, signed in as {out['handle']}. Keep your hunter_id; it is how you pick up where you left off.",
                   "next": f"next_lead(hunter_id='{out['hunter_id']}')"}
 
 
@@ -255,8 +257,9 @@ async def next_lead(hunter_id: str, ctx: Context, star_type: str | None = None, 
                     "plain": "No open lead matches that filter. Here is what is in the queue for you; pick from these or drop the filter.",
                     "next": "tell the user what kinds are available and call next_lead again with a filter that has leads, or with none"}
         return {"lead": None, "available": avail,
-                "plain": "There are no open leads you have not already vetted. New ones are added as more of the sky is searched.",
-                "next": "show the user the board with board(), or check a star of their own choosing"}
+                "plain": "There are no open leads you have not already vetted. New leads come from searching new sky, and you can do that yourself: "
+                         "open a patch of about 150 unsearched stars and your computer searches it in about seven minutes.",
+                "next": f"offer to open a patch: open_patch(hunter_id='{hunter_id}'); or sky_map() to show coverage first"}
     star = lead["star"]
     desc = []
     if star.get("Tmag") is not None:
@@ -272,8 +275,10 @@ async def next_lead(hunter_id: str, ctx: Context, star_type: str | None = None, 
             if lead.get("radius_earth_if_planet") else "")
     lead["brief"] = (f"Lead {lead['lead_id']}: TIC {lead['tic']}" + (f" ({', '.join(desc)})" if desc else "") +
                      f". In sector {lead['sector']} the automatic search saw a dip of {lead['depth_ppm']/1e4:.2f}% every {lead['period_d']:.3f} days.{size} " +
-                     ("PRACTICE LEAD: this queue holds well-known stars for testing the hunt, so expect a known planet or a known impostor. Tell the user so. "
-                      if leads.DEV else "Nobody has checked whether it is real. ") + "Your job is to try to break it.")
+                     ("PRACTICE LEAD: a well-known star kept for practice, so expect a known planet or a known impostor. Tell the user so. "
+                      if lead.get("practice") else
+                      (f"It came from a patch of sky searched by {lead['found_by']}. " if lead.get("found_by") else "") + "Nobody has checked whether it is real. ")
+                     + "Your job is to try to break it.")
     lead["odds"] = "Most leads turn out to be eclipsing binaries, spotted stars or a neighbour's eclipse. Roughly 1 in 10 survives."
     lead["available"] = _lead_call(leads.available, hunter_id)
     lead["next"] = (f"1) catalog_check(tic={lead['tic']})  2) vet_signal(tic={lead['tic']}, sector={lead['sector']}, {vals})  "
@@ -293,7 +298,7 @@ def _auto_status(lead):
         return None, vet is not None, fol is not None
     v, f = vet[0], fol[0]
     cat = store.cache_get("catalog_check", store.key("catalog_check", {"tic": lead["tic"]}))
-    if cat is not None and not leads.DEV and (cat[0]["known_planet_host"] or cat[0]["is_toi"] or cat[0]["is_ctoi"]):
+    if cat is not None and not lead.get("practice") and (cat[0]["known_planet_host"] or cat[0]["is_toi"] or cat[0]["is_ctoi"]):
         return "known_object", True, True     # it became a listed object after the lead was made: not ours to claim
     if f["status"] == "eclipsing_binary" or v["verdict"] == "eclipsing_binary":
         return "eclipsing_binary", True, True
@@ -331,11 +336,11 @@ async def submit_vet(hunter_id: str, lead_id: int, verdict: str, reason: str, ct
     elif status == "cleared":
         plain = f"Lead {lead_id} is cleared: not a planet candidate. Clearing impostors is most of the work, and this one is now off everyone's list."
     elif verdict == "candidate" and info["server_agrees_candidate"]:
-        plain = f"Your vote is in and the server's tests agree. Lead {lead_id} now waits for a second hunter to vet it independently before it can go on the board."
+        plain = f"Your vote is in and the server's tests agree. Lead {lead_id} now waits for a second planet hunter to vet it independently before it can go on the board."
     elif verdict == "candidate":
-        plain = f"Your vote is recorded, but the server's own results read this lead as '{auto}', so it cannot go on the board. Another hunter will take a look."
+        plain = f"Your vote is recorded, but the server's own results read this lead as '{auto}', so it cannot go on the board. Another planet hunter will take a look."
     else:
-        plain = f"Recorded. The server's own results read this lead as '{auto}'; another hunter will take a second look."
+        plain = f"Recorded. The server's own results read this lead as '{auto}'; another planet hunter will take a second look."
     out = {"lead_id": int(lead_id), "lead_status": status, "server_reading": auto, **info, "plain": plain,
            "you": me, "board": {k: bd[k] for k in ("leads_total", "leads_open", "leads_cleared", "leads_surviving")},
            "next": f"next_lead(hunter_id='{hunter_id}') for another, or board() to see the standings"}
@@ -363,15 +368,177 @@ def hunt() -> str:
     """The guided hunting loop over the leads queue."""
     return """Let's hunt with Kepler. Guide me; assume I am new to this.
 
-1. Ask me for a hunter name and call join. Tell me to keep the hunter_id.
+1. Ask me for a planet-hunter name and call join. Tell me to keep the hunter_id.
 2. Call next_lead. If I asked for a kind of star or planet (a Sun-like star, a rocky planet), pass star_type or planet_size; if none matches, tell me what is
    available. Read me the brief in your own words: which star, what the search saw, and that most leads are impostors.
 3. Work through the lead's `next` steps one at a time, with the exact values given. Before each test say in a sentence what impostor it is looking for;
    after it, say what the result means (`plain`) and show the two or three numbers that matter. Show me the plots.
 4. When the tests are done, tell me your verdict and why, ask whether I agree, then call submit_vet.
 5. Tell me what happened to the lead and where I stand, then ask whether I want another. Stop after five leads unless I ask for more.
+6. If no lead is waiting, offer to open a patch of sky (open_patch). Explain that my computer will search about 150 unsearched stars in about seven minutes
+   and that most patches find nothing. Run the command if you can, or give it to me to paste. Then patch_status, and vet whatever it found.
 
 Say "planet candidate", never "planet" or "discovered". Every number must come from a tool run in this conversation. If a tool fails, retry once, then say the step could not be done."""
+
+
+# ---------------- the sky map: patches searched on hunters' own computers ----------------
+EXCLUDE_FILE = os.environ.get("KEPLER_EXCLUDE", os.path.join(store.ROOT, "ops", "private_exclude.txt"))
+SWEEP_CMD = os.environ.get("KEPLER_SWEEP_CMD", "kepler-sweep")
+PUBLIC_URL = os.environ.get("KEPLER_PUBLIC_URL", "")
+
+
+def _sky_call(fn, *a, **k):
+    try:
+        return fn(*a, **k)
+    except (sky.SkyError, leads.LeadError) as e:
+        raise ToolError(str(e)) from None
+
+
+def _map_detector(sector, camera, ccd):
+    """Build one detector's patches in the background (a few minutes of catalogue queries)."""
+    if sky.ccd_status(sector, camera, ccd) in ("building", "ready"):
+        return False
+    sky.mark_ccd(sector, camera, ccd, "building")
+
+    def work():
+        try:
+            from tesshunt.targets import select_detector
+            exclude = set(open(EXCLUDE_FILE).read().split()) if os.path.exists(EXCLUDE_FILE) else set()
+            stars = select_detector(sector, camera, ccd, os.path.join(store.DATA, "catalog"), exclude=exclude)
+            sky.build_ccd(sector, camera, ccd, stars)
+        except Exception as e:
+            sky.mark_ccd(sector, camera, ccd, f"failed: {type(e).__name__}: {str(e)[:120]}")
+    store._pool.submit(work)
+    return True
+
+
+def _map_next():
+    """Start mapping the first detector of the open sectors that has not been mapped yet. Returns (sector, camera, ccd) or None."""
+    for sec in sky.OPEN_SECTORS:
+        for cam in (1, 2, 3, 4):
+            for ccd in (1, 2, 3, 4):
+                st = sky.ccd_status(sec, cam, ccd)
+                if st == "building":
+                    return (sec, cam, ccd)
+                if st is None or str(st).startswith("failed"):
+                    _map_detector(sec, cam, ccd)
+                    return (sec, cam, ccd)
+    return None
+
+
+def _base_url(ctx):
+    if PUBLIC_URL:
+        return PUBLIC_URL.rstrip("/")
+    h = dict(ctx.headers) if (ctx is not None and ctx.headers) else {}
+    host = h.get("x-forwarded-host") or h.get("host") or "127.0.0.1:8000"
+    scheme = h.get("x-forwarded-proto") or ("http" if host.split(":")[0] in ("127.0.0.1", "localhost") else "https")
+    return f"{scheme}://{host}"
+
+
+@mcp.tool(title="The sky map", annotations=READ)
+async def sky_map(ctx: Context, sector: int | None = None) -> dict:
+    """Which patches of sky have been searched and which are still unopened, per sector and detector, with leads found so far.
+    A patch is about 150 faint red-dwarf stars that nobody has searched; opening one runs the search on the hunter's own computer
+    (about seven minutes) and the result is kept for everyone."""
+    out = sky.summary(sector)
+    t = out["totals"]
+    if t["unopened"] == 0 and not out["detectors_being_mapped"] and not sky.PAUSED:
+        nxt = _map_next()
+        if nxt:
+            out["detectors_being_mapped"] = [{"sector": nxt[0], "camera": nxt[1], "ccd": nxt[2]}]
+    if t["patches"] == 0:
+        out["plain"] = ("No patches are mapped yet. Kepler is listing the stars on the first detector now, which takes about five minutes the first time. "
+                        "Meanwhile there may be leads waiting (next_lead).")
+        out["next"] = "tell the user the first patches are being prepared, offer a waiting lead, and call sky_map again in a few minutes"
+    else:
+        out["plain"] = (f"{t['searched']} of {t['patches']} mapped patches have been searched ({t['stars_searched']} stars), finding {t['leads_found']} lead(s). "
+                        f"{t['unopened']} patch(es) are unopened and ready.")
+        out["next"] = "offer the user a waiting lead (next_lead) or a fresh patch of sky (open_patch)"
+    return out
+
+
+@mcp.tool(title="Open a patch of sky", annotations=NOTE)
+async def open_patch(hunter_id: str, ctx: Context, patch_id: str | None = None) -> dict:
+    """Claim an unsearched patch of sky (about 150 stars) for this hunter and get the one command that searches it on their own computer.
+    The search takes about seven minutes, reads NASA's public data directly, and uploads only the results. The patch is held for two hours.
+    If you can run shell commands, run the returned command for the user and relay its progress; otherwise ask them to paste it into a terminal."""
+    p = _sky_call(sky.claim, hunter_id, patch_id)
+    if p is None:
+        nxt = None if sky.PAUSED else _map_next()
+        return {"patch": None, "plain": ("Every mapped patch has been taken. Kepler is mapping the next detector now; fresh patches appear in about five minutes."
+                                           if nxt else "There are no unopened patches right now."),
+                "next": "offer a waiting lead with next_lead, and try open_patch again in a few minutes"}
+    cmd = f"{SWEEP_CMD} {p['id']} --hunter {hunter_id} --hub {_base_url(ctx)}"
+    store.trace(_sid(ctx), "open_patch", {"patch_id": p["id"]}, {"patch_id": p["id"]}, 0, False)
+    return {"patch_id": p["id"], "sector": p["sector"], "stars": p["n_stars"], "held_until_minutes": int((p["claimed_until"] - time.time()) / 60),
+            "command": cmd, "resumed": p["resumed"],
+            "plain": (f"Patch {p['id']} is yours: {p['n_stars']} faint red dwarfs in sector {p['sector']} that nobody has searched. "
+                      "The search runs on your computer and takes about seven minutes. Many patches turn up nothing; when one finds a signal it becomes a lead under your name."),
+            "first_time": "The first run installs the science libraries, which takes a few minutes once. It needs Python 3.11 or newer.",
+            "next": f"run the command (or ask the user to), then call patch_status(patch_id='{p['id']}') to see what came back"}
+
+
+@mcp.tool(title="Patch status", annotations=READ)
+async def patch_status(patch_id: str, ctx: Context, wait_s: float = 20.0) -> dict:
+    """What happened to a patch: unopened, claimed (search not uploaded yet), verifying (the hub is re-checking the signals), or done with the
+    leads it produced. Waits up to wait_s seconds (max 25) while the hub is verifying."""
+    deadline = time.time() + max(0.0, min(float(wait_s), 25.0))
+    while True:
+        p = _sky_call(sky.get, patch_id)
+        if p["status"] != "verifying" or time.time() >= deadline:
+            break
+        await anyio.sleep(1.0)
+    out = {"patch_id": patch_id, "status": p["status"], "stars": p["n_stars"], "opened_by": p["opened_by"], "signals_flagged": p["n_flagged"], "leads": p["n_leads"]}
+    if p["status"] == "done":
+        out["plain"] = (f"Patch searched and stored. {p['n_leads']} signal(s) passed the hub's own re-check and joined the leads queue, credited to {p['opened_by']}."
+                        if p["n_leads"] else "Patch searched and stored. Nothing in it passed the checks, which is the usual result; that sky is now cleared for everyone.")
+        out["next"] = "next_lead to vet what was found" if p["n_leads"] else "open another patch with open_patch, or take a waiting lead"
+    elif p["status"] == "verifying":
+        out["plain"] = f"Results received. The hub is re-running {p['n_flagged']} flagged star(s) itself before they become leads."
+        out["next"] = "call patch_status again"
+    elif p["status"] == "claimed":
+        out["plain"] = "The patch is held but no results have arrived yet. The search command is still running, or has not been started."
+        out["next"] = "wait for the search command to finish, then call patch_status again"
+    else:
+        out["plain"] = "This patch is unopened." + (f" (Last attempt was rejected: {p['note']})" if p.get("note") else "")
+    return out
+
+
+def _verify_patch(pid, hunter_handle, flagged, quiet_tic):
+    """The hub's own check of an upload: re-run every flagged star, plus one quiet one. Runs in the job pool."""
+    def as_row(res):
+        b = res["best"]
+        return {"status": "ok", "period_d": b["period_d"], "t0": b["t0"], "duration_h": b["duration_h"], "max_duration_h": b["max_physical_duration_h"],
+                "depth_ppm": b["depth_ppm"], "depth_err_ppm": b["depth_err_ppm"], "snr": b["snr"], "n_transits": b["n_transits"], "cadence_min": None}
+    try:
+        p = sky.get(pid)
+        sector = p["sector"]
+        if quiet_tic is not None:
+            try:
+                res, _ = core.search_transits(quiet_tic, sector)
+                if sky.lead_bar(as_row(res)) and res["best"]["snr"] >= 12:
+                    sky.finish(pid, [], rejected_reason=f"the upload called TIC {quiet_tic} quiet but the hub finds a strong signal there")
+                    return
+            except Exception:
+                pass      # an archive hiccup on the spot check is not evidence against the upload
+        verified = []
+        for r in flagged[:40]:
+            try:
+                res, _ = core.search_transits(r["tic"], sector)
+            except Exception:
+                continue
+            mine = as_row(res)
+            ratio = mine["period_d"] / r["period_d"] if r["period_d"] else 0
+            same = any(abs(ratio - k) < 0.02 * k for k in (0.5, 1.0, 2.0))
+            if same and sky.lead_bar(mine):
+                star = sky.star_of(pid, r["tic"]) or {}
+                lead = {"tic": r["tic"], "sector": sector, "period_d": mine["period_d"], "t0": mine["t0"], "duration_h": mine["duration_h"],
+                        "depth_ppm": mine["depth_ppm"], "snr": mine["snr"], "star": {k: star.get(k) for k in ("Tmag", "Teff", "rad", "mass", "d", "contratio")}}
+                if leads.add(lead, found_by=hunter_handle, patch_id=pid):
+                    verified.append(lead)
+        sky.finish(pid, verified)
+    except Exception as e:
+        sky.finish(pid, [], rejected_reason=f"the hub could not verify the upload ({type(e).__name__}); please run the search again later")
 
 
 def _guide():
@@ -392,7 +559,7 @@ async def read_guide(ctx: Context) -> str:
 
 
 WELCOME = {
-    "greeting": "Welcome to Kepler. Let's hunt for planets.",
+    "greeting": "Welcome to Kepler, planet hunter. Let's hunt for planets.",
     "about": "Kepler searches NASA's TESS space-telescope data for planets crossing in front of their stars, then tries hard to prove each signal wrong. "
              "What survives is a planet candidate. (Named for Johannes Kepler; the data is from TESS.)",
     "paths": [
@@ -400,10 +567,11 @@ WELCOME = {
          "what": "Find a planet that astronomers already know about, starting from raw telescope pixels, with every step explained.",
          "how": "call lesson"},
         {"name": "Hunt", "time": "5 to 10 minutes per lead",
-         "what": "Take a real lead that nobody has checked yet: a star where the automatic search saw a repeating dip. Try to break it. "
-                 "If it survives your tests and a second hunter's, it goes on the public board with your name.",
+         "what": "Take a real lead that nobody has checked yet: a star where a search saw a repeating dip. Try to break it. "
+                 "If it survives your tests and a second planet hunter's, it goes on the public board with your name. "
+                 "When the queue is empty you can open a fresh patch of sky: your own computer searches about 150 stars nobody has looked at, in about seven minutes.",
          "odds": "Most leads are impostors: eclipsing binaries, spotted stars, a neighbour's eclipse. Expect roughly 1 in 10 to survive.",
-         "how": "ask the user for a hunter name, call join, then next_lead"},
+         "how": "ask the user for a planet-hunter name, call join, then next_lead; if no lead is waiting, sky_map and open_patch"},
         {"name": "Bring your own star", "time": "a few minutes",
          "what": "Name any star TESS observed and run the full check on it.", "how": "follow the check_star procedure"},
     ],
@@ -478,10 +646,50 @@ async def health(request):
     return JSONResponse({"ok": True, "server": "kepler", "version": "0.2.0"})
 
 
+@mcp.custom_route("/patch/{pid}", methods=["GET"])
+async def patch_get(request):
+    from starlette.responses import JSONResponse
+    try:
+        return JSONResponse(sky.stars_for(request.query_params.get("hunter", ""), request.path_params["pid"]))
+    except (sky.SkyError, leads.LeadError) as e:
+        return JSONResponse({"error": str(e)}, status_code=403)
+
+
+@mcp.custom_route("/patch/{pid}/status", methods=["GET"])
+async def patch_state(request):
+    from starlette.responses import JSONResponse
+    try:
+        p = sky.get(request.path_params["pid"])
+    except sky.SkyError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    return JSONResponse({k: p[k] for k in ("id", "status", "n_stars", "n_flagged", "n_leads", "opened_by", "note")})
+
+
+@mcp.custom_route("/patch/{pid}/results", methods=["POST"])
+async def patch_post(request):
+    from starlette.responses import JSONResponse
+    body = await request.body()
+    if len(body) > 2_000_000:
+        return JSONResponse({"error": "upload too large"}, status_code=413)
+    try:
+        import json as _json
+        data = _json.loads(body)
+        pid, hunter = request.path_params["pid"], str(data.get("hunter", ""))
+        flagged, quiet = sky.submit(hunter, pid, data.get("rows"))
+        handle = sky.get(pid)["opened_by"]
+    except (sky.SkyError, leads.LeadError) as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception:
+        return JSONResponse({"error": "the upload could not be read"}, status_code=400)
+    store._pool.submit(_verify_patch, pid, handle, flagged, quiet)
+    return JSONResponse({"received": True, "status": "verifying", "signals_flagged": len(flagged),
+                         "message": f"Results received. The hub is re-checking {len(flagged)} flagged star(s) before they become leads."})
+
+
 @mcp.custom_route("/board.json", methods=["GET"])
 async def board_json(request):
     from starlette.responses import JSONResponse
-    return JSONResponse(leads.board())
+    return JSONResponse(leads.board() | {"sky": sky.summary()})
 
 
 @mcp.custom_route("/board", methods=["GET"])
@@ -495,6 +703,10 @@ async def board_html(request):
         if not items:
             return '<tr><td colspan="4" class="none">None yet.</td></tr>'
         return "".join(f"<tr><td>TIC {i['tic']}</td><td>{i['period_d']:.3f} d</td><td>{i['depth_ppm']/1e4:.2f}%</td><td>{e(', '.join(i[who_key]))}</td></tr>" for i in items)
+    sk = sky.summary(); st = sk["totals"]
+    cover = "".join(f"<tr><td>Sector {d['sector']}, camera {d['camera']}, detector {d['ccd']}</td><td>{d['searched']} of {d['patches']}</td><td>{d['stars_searched']}</td><td>{d['leads_found']}</td></tr>"
+                    for d in sk["detectors"]) or '<tr><td colspan="4" class="none">No patches mapped yet.</td></tr>'
+    openers = "".join(f"<li>{e(o['handle'])} <span>{o['patches']} patches, {o['stars']} stars</span></li>" for o in sk["openers"]) or "<li class=none>Nobody yet.</li>"
     active = "".join(f"<li>{e(h['handle'])} <span>{h['leads_vetted']} vetted</span></li>" for h in b["most_active"]) or "<li class=none>No hunters yet.</li>"
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Kepler board</title><style>
@@ -508,14 +720,16 @@ p.sub{{color:var(--mut);margin:0 0 24px}} .tiles{{display:grid;grid-template-col
 th,td{{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}} th{{color:var(--mut);font-weight:500;font-size:13px}}
 .none{{color:var(--mut)}} ul{{list-style:none;padding:0;columns:2}} li span{{color:var(--mut);font-size:13px}} .note{{color:var(--mut);font-size:14px;margin-top:32px;border-top:1px solid var(--line);padding-top:16px}}
 .surv b{{color:var(--acc)}}</style></head><body><main>
-<h1>Kepler board</h1><p class="sub">Volunteers and their AI assistants vetting planet leads in NASA TESS data.</p>
+<h1>Kepler board</h1><p class="sub">Planet hunters and their AI assistants searching NASA TESS data and vetting what they find.</p>
 <div class="tiles"><div class="tile surv"><b>{b['leads_surviving']}</b><span>surviving candidates</span></div>
 <div class="tile"><b>{b['leads_cleared']}</b><span>leads cleared</span></div><div class="tile"><b>{b['leads_open']}</b><span>leads open</span></div>
-<div class="tile"><b>{b['hunters']}</b><span>hunters</span></div></div>
+<div class="tile"><b>{b['hunters']}</b><span>planet hunters</span></div><div class="tile"><b>{st['stars_searched']}</b><span>stars searched</span></div></div>
 <h2>Surviving candidates</h2><div class="wrap"><table><tr><th>Star</th><th>Period</th><th>Depth</th><th>Vetted by</th></tr>{rows(b['surviving'], 'vetted_by')}</table></div>
 <h2>Waiting for a second vet</h2><div class="wrap"><table><tr><th>Star</th><th>Period</th><th>Depth</th><th>First vet</th></tr>{rows(b['awaiting_second_vet'], 'first_vet_by')}</table></div>
-<h2>Most active hunters</h2><ul>{active}</ul>
-<p class="note">{e(b['note'])} A lead survives when two different hunters call it a candidate and the server's own tests agree.</p>
+<h2>Sky searched</h2><div class="wrap"><table><tr><th>Where</th><th>Patches searched</th><th>Stars</th><th>Leads found</th></tr>{cover}</table></div>
+<h2>Who opened the sky</h2><ul>{openers}</ul>
+<h2>Most active planet hunters</h2><ul>{active}</ul>
+<p class="note">{e(b['note'])} A lead survives when two different planet hunters call it a candidate and the server's own tests agree.</p>
 </main></body></html>"""
     return HTMLResponse(page)
 

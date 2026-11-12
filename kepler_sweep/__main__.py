@@ -1,0 +1,154 @@
+"""Search one patch of sky on this computer and upload the results to Kepler.
+
+    kepler-sweep s7-c2-2-01 --hunter <hunter_id> [--hub https://...] [--workers 8]
+    kepler-sweep --mcp            # run as a local MCP server with one tool, sweep_patch
+
+It fetches the patch's star list from the hub, reads each star's pixels straight from NASA's public TESS files, runs the transit
+search, and uploads one row of numbers per star. Nothing else leaves this computer. An interrupted run picks up where it stopped.
+"""
+import argparse, json, os, sys, time, urllib.error, urllib.request, warnings
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+DEFAULT_HUB = os.environ.get("KEPLER_HUB", "http://127.0.0.1:8000")
+STATE = os.path.join(os.path.expanduser("~"), ".kepler-sweep")
+from kepler_sweep.worker import search_one
+
+
+def _http(url, payload=None, timeout=120):
+    req = urllib.request.Request(url, data=json.dumps(payload).encode() if payload is not None else None,
+                                 headers={"Content-Type": "application/json", "User-Agent": "kepler-sweep"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error", str(e))
+        except Exception:
+            msg = str(e)
+        raise SystemExit(f"Kepler said: {msg}")
+    except urllib.error.URLError as e:
+        raise SystemExit(f"Could not reach Kepler at {url.split('/patch')[0]} ({e.reason}). Is the address right and the server up?")
+
+
+def looks_like_a_signal(r):
+    """Rough local count for the progress line; the hub applies the real rule."""
+    try:
+        return r["status"] == "ok" and r["snr"] >= 8 and r["n_transits"] >= 2 and r["depth_ppm"] / r["depth_err_ppm"] >= 5 and r["duration_h"] <= 1.5 * r["max_duration_h"] + 0.5
+    except Exception:
+        return False
+
+
+def sweep(patch, hunter, hub=DEFAULT_HUB, workers=None, say=print):
+    """Search a patch and upload it. Returns the hub's final word on the patch as a dict."""
+    hub = hub.rstrip("/")
+    job = _http(f"{hub}/patch/{patch}?hunter={hunter}")
+    stars, sector = job["stars"], job["sector"]
+    os.makedirs(STATE, exist_ok=True)
+    path = os.path.join(STATE, f"{patch}.jsonl")
+    done = {}
+    if os.path.exists(path):
+        for line in open(path):
+            try:
+                r = json.loads(line); done[r["tic"]] = r
+            except Exception:
+                pass
+    todo = [s for s in stars if s["tic"] not in done]
+    workers = workers or max(2, min(8, (os.cpu_count() or 4) - 1))
+    say(f"Patch {patch}: {len(stars)} stars in TESS sector {sector}." + (f" Resuming: {len(done)} already searched." if done else "")
+        + f" Searching with {workers} workers; expect about {max(1, round(len(todo) / (2.7 * workers)))} minutes.")
+    t0 = time.time(); last = 0; first_error = None
+    if todo:
+        with ProcessPoolExecutor(workers) as ex, open(path, "a") as f:
+            failures = 0
+            for fut in as_completed([ex.submit(search_one, (s, sector)) for s in todo]):
+                try:
+                    r = fut.result()
+                except Exception as e:
+                    failures += 1; first_error = first_error or f"{type(e).__name__}: {e}"
+                    if failures >= 5 and not done:
+                        raise SystemExit(f"The search cannot run on this computer: {first_error}")
+                    continue
+                done[r["tic"]] = r
+                f.write(json.dumps(r) + "\n"); f.flush()
+                if looks_like_a_signal(r):
+                    say(f"  TIC {r['tic']}: something here. A {r['depth_ppm']/1e4:.2f}% dip every {r['period_d']:.2f} days, seen {int(r['n_transits'])} times.")
+                if len(done) - last >= 10 or len(done) == len(stars):
+                    last = len(done)
+                    n_sig = sum(looks_like_a_signal(x) for x in done.values())
+                    rate = (len(done) - (len(stars) - len(todo))) / max(time.time() - t0, 1e-9) * 60
+                    left = (len(stars) - len(done)) / max(rate, 1e-9)
+                    say(f"  {len(done)} of {len(stars)} stars searched, {n_sig} possible signal(s), about {left:.0f} min left")
+    if len(done) < 0.9 * len(stars):
+        raise SystemExit(f"Only {len(done)} of {len(stars)} stars could be searched ({first_error if todo else 'no error recorded'}). "
+                         "Nothing was uploaded; run the same command again to continue.")
+    ok = sum(1 for r in done.values() if r["status"] == "ok")
+    say(f"Search finished: {ok} of {len(stars)} stars gave a usable light curve. Uploading results.")
+    res = _http(f"{hub}/patch/{patch}/results", {"hunter": hunter, "rows": list(done.values())})
+    say(res.get("message", "Uploaded."))
+    final = {"status": "verifying"}
+    for _ in range(90):
+        final = _http(f"{hub}/patch/{patch}/status")
+        if final.get("status") != "verifying":
+            break
+        time.sleep(4)
+    if final.get("status") == "done":
+        n = final.get("n_leads", 0)
+        say(f"Done. {n} lead(s) from this patch joined the queue under your name." if n else "Done. Nothing here passed the checks, which is the usual result. This patch of sky is now cleared for everyone.")
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    elif final.get("status") == "verifying":
+        say("The hub is still verifying; ask Kepler for the patch status in a minute.")
+    else:
+        say(f"The hub did not accept this upload: {final.get('note') or final.get('status')}")
+    return final
+
+
+def serve_mcp():
+    """Local MCP server over stdio with one tool, for people who would rather not paste commands."""
+    import anyio
+    from mcp.server.mcpserver import Context, MCPServer
+    m = MCPServer("kepler-sweep", title="Kepler sweep helper (runs on this computer)",
+                  instructions="One tool: sweep_patch searches a patch of sky on this computer for the Kepler hub. Use it after Kepler's open_patch gives you a patch id.")
+
+    @m.tool(title="Search a patch of sky on this computer")
+    async def sweep_patch(patch_id: str, hunter_id: str, ctx: Context, hub: str = DEFAULT_HUB) -> dict:
+        """Search one Kepler patch (about 150 stars, about seven minutes) on this computer and upload the results. Takes the patch_id and
+        hunter_id from Kepler's open_patch. Reads NASA's public TESS data directly; only the search results are sent to the hub."""
+        lines = []
+
+        def say(msg):
+            lines.append(msg)
+            try:
+                anyio.from_thread.run(ctx.report_progress, float(len(lines)), None, msg)
+            except Exception:
+                pass
+        final = await anyio.to_thread.run_sync(lambda: sweep(patch_id, hunter_id, hub, None, say))
+        return {"patch": final, "log": lines[-6:]}
+    m.run("stdio")
+
+
+def main():
+    warnings.filterwarnings("ignore")
+    ap = argparse.ArgumentParser(prog="kepler-sweep", description="Search one patch of sky for Kepler on this computer.")
+    ap.add_argument("patch", nargs="?", help="patch id from Kepler's open_patch, for example s7-c2-2-01")
+    ap.add_argument("--hunter", help="your planet-hunter id (hunter_id) from Kepler's join")
+    ap.add_argument("--hub", default=DEFAULT_HUB, help="address of the Kepler server")
+    ap.add_argument("--workers", type=int, default=None)
+    ap.add_argument("--mcp", action="store_true", help="run as a local MCP server instead")
+    a = ap.parse_args()
+    if a.mcp:
+        return serve_mcp()
+    if not a.patch or not a.hunter:
+        ap.error("give a patch id and --hunter (both come from Kepler's open_patch)")
+    try:
+        import lightkurve, astrocut  # noqa: F401
+    except Exception:
+        sys.exit("The science libraries are missing. Install with:  pip install kepler-mcp   (or run through uvx / pipx)")
+    final = sweep(a.patch, a.hunter, a.hub, a.workers)
+    sys.exit(0 if final.get("status") in ("done", "verifying") else 1)
+
+
+if __name__ == "__main__":
+    main()

@@ -37,6 +37,8 @@ def main():
     os.chdir(ROOT)
     sys.path.insert(0, ROOT)
     os.environ.setdefault("TESSHUNT_MCP_DATA", os.path.join(ROOT, "data", "mcp"))
+    # when run from a checkout, the helper is started with this interpreter from this folder
+    os.environ.setdefault("KEPLER_SWEEP_CMD", f'cd "{ROOT}" && "{sys.executable}" -W ignore -m kepler_sweep')
     os.environ.setdefault("MPLBACKEND", "Agg")
     os.environ.setdefault("PYTHONWARNINGS", "ignore")
     warnings.filterwarnings("ignore")
@@ -56,7 +58,8 @@ def main():
     leads_file = args.leads or next((p for p in (os.path.join(ROOT, "ops", "leads.jsonl"), os.path.join(ROOT, "ops", "dev_leads.jsonl")) if os.path.exists(p)), "")
     if leads_file and not args.stdio:
         say(f"  leads file: {leads_file}" + ("  (development leads: known stars, for testing)" if leads_file.endswith("dev_leads.jsonl") else ""))
-        say(f"  board: http://{args.host}:{args.port}/board\n")
+        say(f"  board: http://{args.host}:{args.port}/board")
+        say("  sky: hunters open patches of sectors " + os.environ.get("KEPLER_OPEN_SECTORS", "7 8") + " and search them with kepler-sweep on their own computer\n")
     sys.argv = ["kepler-mcp"] + (["--stdio"] if args.stdio else ["--host", args.host, "--port", str(args.port)]) + (["--leads", leads_file] if leads_file else [])
     from tesshunt_mcp.server import main as serve
     try:
