@@ -19,11 +19,11 @@ _lock = threading.RLock()
 # The kinds of star a patch can hold. Limits are passed to the target selection; `finds` is said to the planet hunter.
 POPULATIONS = {
     "red": {"teff": (2300.0, 3900.0), "rad_max": 0.6, "tmag": (12.0, 15.0),
-            "finds": "small red dwarfs, where even Neptune-sized planets leave a dip of a percent. The least-searched stars and the best odds."},
+            "finds": "Red dwarfs, Tmag 12-15. Detectable: dips of about 0.5% and deeper, Neptune-sized planets and larger. Least-searched population."},
     "orange": {"teff": (3900.0, 5200.0), "rad_max": 0.85, "tmag": (12.5, 15.0),
-               "finds": "orange dwarfs, a little smaller than the Sun. Saturn- and Jupiter-sized planets show; smaller ones are lost in the noise at this faintness."},
+               "finds": "Orange dwarfs, Tmag 12.5-15. Detectable: dips of about 0.7% and deeper, Saturn-sized planets and larger."},
     "yellow": {"teff": (5200.0, 6000.0), "rad_max": 1.3, "tmag": (13.5, 15.0),
-               "finds": "faint Sun-like stars. Only giant planets (a dip near 1%) can show at this faintness, and brighter Sun-like stars were already searched by the mission, so these start at magnitude 13.5."},
+               "finds": "Sun-like stars, Tmag 13.5-15 (brighter ones are covered by the mission's own searches). Detectable: dips near 1%, giant planets only."},
 }
 
 SCHEMA = """
@@ -94,7 +94,7 @@ def claim(hunter_id, pid=None, now=None, pop=None):
     """Hold a patch for this hunter. With no id, picks an unopened one of the wanted star type (resuming a patch they already hold first)."""
     now = now or time.time()
     if PAUSED:
-        raise SkyError("opening new patches is paused for now; there may still be leads waiting (next_lead)")
+        raise SkyError("patch claims are paused; next_lead may still have leads")
     with _lock:
         with leads._db() as lc:
             me = leads._handle(lc, hunter_id)
@@ -117,7 +117,7 @@ def claim(hunter_id, pid=None, now=None, pop=None):
                 if row["status"] != "unopened":
                     raise SkyError(f"patch {pid} is already {row['status']}" + (f" by {row['opened_by']}" if row["opened_by"] else "") + "; pick another")
             if len(held) >= MAX_CLAIMS:
-                raise SkyError(f"you already hold {len(held)} patches ({', '.join(h['id'] for h in held)}); finish one first")
+                raise SkyError(f"claim limit reached: {len(held)} patches held ({', '.join(h['id'] for h in held)}); finish one first")
             c.execute("update patches set status='claimed', opened_by=?, claimed_until=? where id=?", (me, now + CLAIM_SECONDS, row["id"]))
             return dict(c.execute("select * from patches where id=?", (row["id"],)).fetchone()) | {"resumed": False}
 
@@ -132,7 +132,7 @@ def stars_for(hunter_id, pid):
             if not p:
                 raise SkyError(f"there is no patch {pid}")
             if p["status"] != "claimed" or p["opened_by"] != me:
-                raise SkyError(f"patch {pid} is not held by you; call open_patch first")
+                raise SkyError(f"patch {pid} is not held by this handle; call open_patch first")
             return {"patch_id": pid, "sector": p["sector"], "stars": [json.loads(r["star"]) for r in c.execute("select star from patch_stars where patch_id=? order by tic", (pid,))]}
 
 
@@ -169,7 +169,7 @@ def submit(hunter_id, pid, rows, now=None):
             if not p:
                 raise SkyError(f"there is no patch {pid}")
             if p["status"] != "claimed" or p["opened_by"] != me:
-                raise SkyError(f"patch {pid} is not held by you (status: {p['status']})")
+                raise SkyError(f"patch {pid} is not held by this handle (status: {p['status']})")
             want = {r["tic"] for r in c.execute("select tic from patch_stars where patch_id=?", (pid,))}
             if not isinstance(rows, list) or len(rows) > len(want) + 5:
                 raise SkyError("results must be a list with one row per star in the patch")

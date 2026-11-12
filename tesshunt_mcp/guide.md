@@ -1,6 +1,6 @@
-# Vetting guide: how transit signals fool you
+# Vetting reference: false positives in transit searches
 
-Background for reading the tools' output. It is not evidence about any star: every claim about a star must come from a tool run on that star.
+Background for reading tool output. Not evidence about any star: claims about a star come from tool runs on that star.
 
 ## What a planet candidate needs
 1. A dip that repeats at a fixed period, in every sector that observed the star with enough quality to see it.
@@ -13,12 +13,12 @@ Passing all five makes a **candidate**. Confirmation takes other instruments: sp
 
 ## Common impostors and the test that catches each
 - **Eclipsing binary, circular.** A second, shallower eclipse at phase 0.5, or odd and even depths that differ (true period is twice the detected one).
-- **Eclipsing binary, eccentric.** The second eclipse sits away from phase 0.5 (0.54, 0.3, anywhere). A test that looks only at 0.5 passes it. `vet_signal` scans every phase from 0.15 to 0.85; look at the full phase-curve panel yourself.
+- **Eclipsing binary, eccentric.** The second eclipse sits away from phase 0.5 (0.54, 0.3, anywhere). A test that looks only at 0.5 passes it. `vet_signal` scans every phase from 0.15 to 0.85; the full phase-curve panel shows it directly.
 - **Spotted rotating star.** A smooth wave, not a box: the "dip" lasts a large fraction of the period and exceeds the physical maximum duration. Periods under a day with durations of many hours are almost always this.
 - **Neighbour's eclipse.** TESS pixels are 21 arcseconds wide, so several stars share one. The difference image peaks off the target and the light centroid shifts during the dip. `neighbors` lists which stars are bright enough to fake the depth.
 - **Diluted depth.** Extra light in the aperture makes a dip shallower, so the body looks smaller than it is. Depth that changes from sector to sector usually means the aperture changed, not the star.
 - **Scattered light and pointing jitter.** Dips that line up with the start or end of an orbit, or that appear in one sector only. A real planet transits every period.
-- **Single-cadence glitches.** One very low point. The pipeline drops isolated ones, but check that a "transit" is made of several consecutive points.
+- **Single-cadence glitches.** One very low point. The pipeline drops isolated ones; a real transit spans several consecutive points.
 
 ## Reading the numbers
 - **SNR** of a search peak is its height above the scatter of the periodogram. Below about 8 expect noise. Every light curve returns a best peak.
@@ -34,9 +34,8 @@ Passing all five makes a **candidate**. Confirmation takes other instruments: sp
 - "One deep event at phase X" means a dip seen in a single orbit: an eclipse and a glitch look alike there, and only other sectors can tell.
 
 ## Leads and the board
-- New leads come from **patches**: about 150 unsearched stars that a hunter's own computer searches in about seven minutes. The hub re-runs every reported signal itself before it becomes a lead. Many patches find nothing; that sky is then cleared for everyone.
+- New leads come from **patches**: about 150 unsearched stars of one type, searched on the user's own computer in about seven minutes. The hub re-runs every reported signal itself before it becomes a lead. Many patches find nothing; that sky is then cleared for everyone.
 - A lead is a star where a bulk search of many thousands of stars saw a repeating dip. The search is deliberately generous, so most leads are impostors. Roughly 1 in 10 survives.
-- Clearing an impostor is real work: it takes the star off everyone's list.
 - A lead reaches the board only when two different hunters call it a candidate and the server's own results agree. The board lists unconfirmed candidates; nothing is submitted anywhere.
 
 ## Limits of this server

@@ -1,15 +1,13 @@
 # Kepler
 
-**Welcome to Kepler. Let's hunt for planets.**
+MCP server for transit search and vetting on NASA TESS full-frame images. It finds transit-shaped signals around stars nobody has searched, tests them against the common false positives, and tracks which survive. Results are **planet candidates**; confirmation requires other instruments. Named for Johannes Kepler; the data is from the TESS mission.
 
-Kepler is an MCP server that lets Claude, or any MCP client, search NASA's TESS space-telescope data for **transiting planet candidates** and then try to break what it finds. It guides a newcomer through the whole thing. (Named for Johannes Kepler; the data is from the TESS mission, not the Kepler space telescope.)
+Three workflows:
+- **Check a star.** Name any star TESS observed: light curve from raw pixels, transit search, false-positive tests, multi-sector repetition.
+- **Vet a lead.** Take a queued signal from a searched patch of sky, run the tests, record a verdict. A lead is listed as a candidate after two independent candidate verdicts and agreement from the server's own results.
+- **Search new sky.** Claim a patch of about 150 unsearched stars; a local helper searches it on your own computer in about seven minutes and uploads the numbers. Each patch is searched once and stored for everyone.
 
-Three ways in:
-- **Learn.** Find a planet astronomers already know about, starting from raw telescope pixels, with every step explained. About ten minutes.
-- **Hunt.** Take a real lead: a star where a bulk search saw a repeating dip that nobody has checked. Try to break it. If it survives your tests and a second planet hunter's, it goes on the public board with your name. Most leads are impostors; expect roughly 1 in 10 to survive.
-- **Bring your own star.** Name any star TESS observed and run the full check.
-
-It reports candidates, never planets: confirmation needs other telescopes.
+People who use it are planet hunters. An optional guided lesson (`lesson`) recovers a known planet step by step.
 
 ## Quick start
 ```bash
@@ -18,19 +16,18 @@ pip install -e .
 python start.py
 claude mcp add --transport http kepler http://127.0.0.1:8000/mcp
 ```
-Then open Claude and say: **"Open Kepler. Let's hunt for planets."**
+Then, in Claude: "Use Kepler to check Pi Mensae", "give me a lead to vet", or "search some new sky".
 
 `start.py` checks the dependencies, loads the leads queue, and prints the board address. For a client that launches the server itself: `claude mcp add kepler -- kepler-mcp --stdio`.
 
-## Hunting leads
+## Leads queue
 | Tool | What it does |
 |---|---|
-| `welcome()` | the greeting and the three paths |
-| `lesson()` | the guided five-step lesson on a known planet |
-| `join(handle)` | pick a planet-hunter name; returns a `hunter_id` to keep for later sessions |
-| `next_lead(hunter_id)` | one unchecked lead, with the exact values to test |
-| `submit_vet(hunter_id, lead_id, verdict, reason, ...)` | your verdict, accepted only after the tests have been run |
-| `board()`, `my_progress(hunter_id)` | standings and your tally |
+| `join(handle)` | register a handle; returns the `hunter_id` credential |
+| `next_lead(hunter_id, star_type?, planet_size?)` | one unvetted lead with the arguments for the tests |
+| `submit_vet(hunter_id, lead_id, verdict, reason, ...)` | record a verdict; accepted only after the tests have run |
+| `board()`, `my_progress(hunter_id)` | standings and one handle's tally |
+| `lesson()` | optional guided lesson on a known planet |
 
 The board is also a web page at `/board` (JSON at `/board.json`).
 
@@ -52,9 +49,9 @@ That helper runs on the hunter's own computer for about seven minutes. It gets t
 
 `kepler-sweep --mcp` runs the same helper as a local MCP server with one tool, `sweep_patch`, for people who would rather add it once than paste commands.
 
-**How the board stays honest.** A verdict is refused until the vetting and the multi-sector follow-up have actually been run on the lead's exact values. The server keeps its own reading of every lead from those results. A lead is listed as surviving only when two different planet hunters call it a candidate **and** the server's reading agrees, so nobody can vote an impostor onto the board. Nothing is submitted to any archive.
+**Integrity of the board.** A verdict is refused until the vetting and the multi-sector follow-up have actually been run on the lead's exact values. The server keeps its own reading of every lead from those results. A lead is listed as surviving only when two different planet hunters call it a candidate **and** the server's reading agrees, so nobody can vote an impostor onto the board. Nothing is submitted to any archive.
 
-Prompts: `start` (welcome), `hunt` (the guided loop over leads), `check_star(star)` (one star end to end).
+Prompts: `hunt` (procedure for vetting leads), `check_star(star)` (procedure for one star).
 
 ## Analysis tools
 | Tool | What it does | Typical time |
@@ -70,7 +67,7 @@ Prompts: `start` (welcome), `hunt` (the guided loop over leads), `check_star(sta
 | `report_verdict(tic, verdict, reason)` | optional: record your final call | instant |
 | `read_guide()` | how transit signals fool you, and this server's limits | instant |
 
-Every result carries `plain` (what it means in one sentence) and `next` (the sensible next step with exact values). Resource `kepler://guide` is the vetting guide ([tesshunt_mcp/guide.md](tesshunt_mcp/guide.md)).
+**Result contract.** Every result carries `summary` (what was measured or decided, one or two neutral sentences), `next_actions` (suggested calls as `{tool, args, why}` with complete arguments), and `caveats`. Resource `kepler://guide` is the vetting guide ([tesshunt_mcp/guide.md](tesshunt_mcp/guide.md)).
 
 Units: times are BTJD (BJD - 2457000), depths ppm, durations hours, periods days.
 

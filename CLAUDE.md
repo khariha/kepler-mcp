@@ -14,6 +14,8 @@ MCP server for finding and vetting transiting planet candidates in TESS full-fra
 
 ## Rules
 - Output says "planet candidate", never "planet" or "discovered".
+- Voice: instrument. Tool output is terse and neutral: no greetings, encouragement, second person, or coaching. The `lesson` tool is the one exception.
+- Result contract: every result has `summary` (neutral, one or two sentences), `next_actions` (list of {tool, args, why} built with core.act, arguments complete), and `caveats`. No prose instructions to the model inside results.
 - Tools return JSON numbers plus an optional PNG, with a `caveats` list. An archive failure raises ToolError; it is never turned into a verdict.
 - No tool takes a URL or a file path from the caller. Cutout size is chosen by the server from the star's brightness.
 - Run `pytest` and `scripts/warm.py` against a local server before committing server changes.
@@ -46,4 +48,5 @@ MCP server for finding and vetting transiting planet candidates in TESS full-fra
 - Every lead was labelled "practice", including one from a real searched patch → the practice flag was global to the queue → practice is per lead (file-loaded with no patch), and patch leads are handed out first.
 - Do not quote odds that were never measured ("one patch in three has a signal") → say "many patches find nothing" until the hub has real counts to report.
 - Measured on a laptop (8 workers, home connection): about 22 stars a minute, 20 s per star, download-bound → patch size 150 for a seven-minute search; mapping one detector into patches takes 5-6 minutes of catalogue queries.
+- The client narrated the server's coaching as its own ("Your job is to try to break it", "Promising, but...") and the product read like a tour, not a tool → results carried prose hints addressed to the model and a chatty `plain` field → results state facts in `summary` and suggest calls in structured `next_actions`; tests scan emitted strings for second person and exclamation marks.
 

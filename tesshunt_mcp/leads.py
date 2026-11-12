@@ -83,11 +83,11 @@ def count():
 def join(handle):
     handle = (handle or "").strip()
     if not HANDLE.fullmatch(handle):
-        raise LeadError("a planet-hunter name is 3 to 20 characters: letters, digits, dash or underscore, starting with a letter or digit")
+        raise LeadError("handle must be 3 to 20 characters: letters, digits, dash or underscore, starting with a letter or digit")
     hunter_id = secrets.token_urlsafe(9)
     with _lock, _db() as c:
         if c.execute("select 1 from hunters where handle = ?", (handle,)).fetchone():
-            raise LeadError(f"the name '{handle}' is taken. Pick another, or if it is yours, use the hunter_id you were given when you joined")
+            raise LeadError(f"handle '{handle}' is taken; choose another, or use the hunter_id issued when it was registered")
         c.execute("insert into hunters values (?,?,?)", (_hash(hunter_id), handle, time.time()))
     return {"handle": handle, "hunter_id": hunter_id}
 
@@ -95,7 +95,7 @@ def join(handle):
 def _handle(c, hunter_id):
     row = c.execute("select handle from hunters where id_hash = ?", (_hash(hunter_id or ""),)).fetchone()
     if not row:
-        raise LeadError("unknown hunter_id. Call join(handle) first, or pass the hunter_id you were given when you joined")
+        raise LeadError("unknown hunter_id; call join(handle), or pass the hunter_id issued at registration")
     return row["handle"]
 
 
@@ -202,9 +202,9 @@ def record(hunter_id, lead_id, verdict, hold, deciding_test, reason, auto_status
         if not lead:
             raise LeadError(f"there is no lead {lead_id}")
         if c.execute("select 1 from vets where lead_id = ? and hunter = ?", (lead["id"], me)).fetchone():
-            raise LeadError("you have already vetted this lead; call next_lead for a new one")
+            raise LeadError("this handle has already vetted this lead; call next_lead")
         if lead["status"] != "open":
-            raise LeadError(f"lead {lead_id} is already settled ({lead['status']}); call next_lead for a new one")
+            raise LeadError(f"lead {lead_id} is already settled ({lead['status']}); call next_lead")
         c.execute("insert into vets values (?,?,?,?,?,?,?,?,?)",
                   (lead["id"], me, verdict, int(bool(hold)), deciding_test, (reason or "")[:600], auto_status, json.dumps(tools_seen or []), now))
         c.execute("delete from claims where lead_id = ? and hunter = ?", (lead["id"], me))

@@ -52,7 +52,7 @@ def main():
         say(f"Kepler MCP server starting at {url}")
         say(f"  cache and logs: {os.environ['TESSHUNT_MCP_DATA']}")
         say(f"  connect Claude Code (once):  claude mcp add --transport http kepler {url}")
-        say('  then say:  "Open Kepler. Let\'s hunt for planets."')
+        say('  then ask:  "Use Kepler to check Pi Mensae"  |  "give me a lead to vet"  |  "search some new sky"')
         say("  stop with Ctrl-C")
 
     leads_file = args.leads or next((p for p in (os.path.join(ROOT, "ops", "leads.jsonl"), os.path.join(ROOT, "ops", "dev_leads.jsonl")) if os.path.exists(p)), "")

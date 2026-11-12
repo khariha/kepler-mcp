@@ -23,25 +23,28 @@ NOTE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint
 TIMEOUT = float(os.environ.get("TESSHUNT_MCP_TIMEOUT_S", 120))
 _slots = None   # created inside the event loop
 
-INSTRUCTIONS = """Kepler: hunt for transiting planet CANDIDATES in NASA TESS data, with a guide at your side. (Named for Johannes Kepler; the data is from the TESS mission, not the Kepler space telescope.)
+INSTRUCTIONS = """Kepler: transit search and vetting on NASA TESS full-frame images. Finds and tests planet candidates. Named for Johannes Kepler; the data is TESS.
 
-First contact: when the user arrives, greets you, or says something like "let's start" or "let's hunt", call `welcome` and offer its two paths in your own words: Learn (find a known planet from raw data, explained step by step; call `lesson`) or Hunt (take a real unchecked lead, try to break it, get credited on the public board; call `join` then `next_lead`, which can filter by star colour or planet size when the user has a preference; when no lead is waiting, `open_patch` lets the user's own computer search a fresh patch of sky). If the user names a specific star instead, check that star with the `check_star` procedure.
+Workflows
+- Check a named star: resolve_star -> catalog_check -> search_transits -> vet_signal -> neighbors -> followup_start -> job_status.
+- Vet a queued lead: join -> next_lead -> vet_signal -> neighbors -> followup_start -> job_status -> submit_vet.
+- Search new sky: join -> sky_map -> open_patch -> run the returned command on the user's computer -> patch_status -> next_lead.
+- lesson: an opt-in guided walkthrough on a known planet. read_guide: reference on false positives and verdict meanings.
 
-Hand-holding: most results carry `next` (the sensible next step, with exact values to pass) and `plain` (what the result means in one sentence). Follow `next` unless the user asks for something else, and explain each step in plain words before showing numbers. Ask the user a question now and then; this is their hunt.
+Results
+- summary: what was measured or decided. next_actions: suggested calls with complete arguments. caveats: limits of this result.
+- Units: times BTJD (BJD - 2457000), depths ppm, durations hours, periods days. Significance is against measured scatter.
 
-Rules for whoever reads the results:
-- Say "planet candidate", never "planet" or "discovered". Nothing here confirms a planet; only follow-up observations can.
-- A single sector is never enough. A signal must repeat (followup_start) and show no second eclipse before it is called a candidate.
-- Every number you report about a star must come from a tool run on that star in this conversation. The vetting guide (read_guide) is background, not evidence.
-- A network or archive failure is an error to retry, not a verdict about the star.
-- Be honest about odds: most leads are impostors, and most stars show nothing.
+Rules
+- Report "planet candidate", never "planet" or "discovered". Confirmation requires other instruments.
+- State only numbers returned by a tool in this conversation. The guide is background, not evidence.
+- One sector is not sufficient. A candidate repeats across sectors and shows no secondary eclipse.
+- A tool or archive error is a retry condition, not a result about the star.
 
-Times are BTJD (BJD - 2457000). Depths are ppm. Calls are rate limited per user; cached answers are free.
-Privacy: tool names, arguments and numeric results are logged with an anonymous daily-rotating id to improve the tools; the log may be used to train open models. No IP address, account, prompt or model reasoning is stored. A planet-hunter name, if the user picks one, is shown on the public board.
+Limits: one star per call; 60 calls and 5 follow-ups per hour per user; cached results are free; follow-up covers at most 12 sectors.
+Logging: tool names, arguments and numeric results are logged with an anonymous daily-rotating id and may be used to train open models. No IP address, account, prompt or model reasoning is stored. A chosen handle is public on the board."""
 
-Vocabulary: call the user a "planet hunter". What they find is always a "planet candidate"."""
-
-mcp = MCPServer("kepler", title="Kepler: hunt for planets in NASA TESS data", instructions=INSTRUCTIONS,
+mcp = MCPServer("kepler", title="Kepler: TESS transit search and vetting", instructions=INSTRUCTIONS,
                 website_url="https://github.com/khariha/kepler-mcp", version="0.2.0")
 
 
@@ -89,57 +92,56 @@ def _content(result, png):
 
 @mcp.tool(title="Resolve a star", annotations=READ)
 async def resolve_star(query: str, ctx: Context) -> list:
-    """Find a star in the TESS Input Catalog. query: 'TIC 261136679', a bare TIC number, a name ('Pi Mensae', 'TOI-700', 'LHS 3844'), or 'ra dec' in degrees.
-    Returns TIC id, coordinates, TESS magnitude, temperature, radius, mass, distance, contamination ratio, and the sectors that observed it."""
+    """Catalogue lookup. Input: a TIC id ('TIC 261136679' or the bare number), a name MAST resolves ('Pi Mensae', 'TOI-700'), or 'ra dec' in degrees.
+    Output: TIC id, position, TESS magnitude, temperature, radius, mass, distance (pc and light-years), proper motion, sectors observed. About 1 s."""
     q = query.strip()[:80]
     return await _run("resolve_star_tool", "light", ctx, {"q": q.lower()}, lambda: core.resolve_star(q))
 
 
 @mcp.tool(title="Check catalogs", annotations=READ)
 async def catalog_check(tic: int, ctx: Context) -> list:
-    """Is this TIC already a confirmed planet host, a TESS Object of Interest (TOI), or a Community TOI? Do this before any search:
-    a signal on a known planet host is a recovery, not a new candidate."""
+    """Prior claims on a star. Output: confirmed planets, TOI entries, community-candidate (CTOI) status. A signal on a listed star is a recovery,
+    not a new candidate. About 5 s."""
     return await _run("catalog_check", "light", ctx, {"tic": tic}, lambda: core.catalog_check(tic))
 
 
 @mcp.tool(title="Light curve from full-frame images", annotations=READ)
 async def light_curve(tic: int, sector: int, ctx: Context) -> list:
-    """Build the star's brightness-vs-time curve for one sector from raw TESS full-frame-image pixels (first call per star and sector takes 5-50 s).
-    Returns cadence, noise, a binned series and a plot. Use a sector from resolve_star."""
+    """Light curve for one sector from full-frame-image pixels: threshold aperture, background regression, 33 h flatten, jitter and glitch masks.
+    Output: cadence, scatter, aperture size, binned series, plot. 5-50 s on first use of a star and sector, then cached."""
     return await _run("light_curve", "light", ctx, {"tic": tic, "sector": sector}, lambda: core.light_curve(tic, sector))
 
 
 @mcp.tool(title="Search for transits", annotations=READ)
 async def search_transits(tic: int, sector: int, ctx: Context, min_period_d: float = 0.3, max_period_d: float = 13.0,
                           min_snr: float = 9.0, min_depth_ppm: float = 0.0) -> list:
-    """Box-least-squares search of one sector for a periodic dip. Returns the strongest signal (period, epoch t0, duration, depth, SNR),
-    quick shape tests, whether it passes the candidate bar and why not, plus a periodogram and fold plot. Every star returns a 'best' peak;
-    most are noise, so read SNR, depth_sigma and failed_checks. Narrow the period range to chase a specific signal; raise min_depth_ppm
-    (for example 3000) to mimic a survey that only wants deep dips."""
+    """Box-least-squares transit search of one sector. Output: best peak (period, t0, duration, depth, SNR, transits), odd/even and
+    secondary tests, candidate-bar result with reasons, other peaks, periodogram and fold plot. Every light curve returns a best peak; SNR under 8
+    is noise. Period range and bar thresholds (min_snr, min_depth_ppm) are adjustable. 5-15 s."""
     a = {"tic": tic, "sector": sector, "min_period_d": min_period_d, "max_period_d": max_period_d, "min_snr": min_snr, "min_depth_ppm": min_depth_ppm}
     return await _run("search_transits", "light", ctx, a, lambda: core.search_transits(tic, sector, min_period_d, max_period_d, min_snr, min_depth_ppm))
 
 
 @mcp.tool(title="Vet a signal", annotations=READ)
 async def vet_signal(tic: int, sector: int, period_d: float, t0: float, duration_h: float, ctx: Context) -> list:
-    """Try to break a signal in one sector: odd vs even depths, a secondary eclipse at ANY orbital phase (catches eccentric eclipsing binaries),
-    duration against the physical maximum, centroid shift, difference image, and Gaia neighbours. Returns a verdict with reasons and a three-panel plot.
-    t0 is a mid-transit time in BTJD, as returned by search_transits."""
+    """False-positive tests on one signal in one sector: odd/even depths, secondary eclipse at every phase 0.15-0.85, duration against the physical
+    maximum, centroid shift, difference image, neighbours. Output: verdict with reasons and a three-panel plot. t0 is a mid-transit time in BTJD.
+    Verdicts: eclipsing_binary, not_significant, not_transit_shaped, on_target, likely_on_target, blended, anomaly, off_target, untestable. 5-15 s."""
     a = {"tic": tic, "sector": sector, "period_d": period_d, "t0": t0, "duration_h": duration_h}
     return await _run("vet_signal", "light", ctx, a, lambda: core.vet_signal(tic, sector, period_d, t0, duration_h))
 
 
 @mcp.tool(title="Gaia neighbours", annotations=READ)
 async def neighbors(tic: int, sector: int, ctx: Context, depth_ppm: float | None = None) -> list:
-    """Gaia DR3 stars within 3 TESS pixels (63 arcsec) of the target, with separation and brightness relative to the target.
-    Give depth_ppm to see how deep an eclipse on each neighbour would have to be to fake the dip."""
+    """Stars within 3 TESS pixels (63 arcsec) of the target: separation and flux relative to the target. With depth_ppm, the eclipse depth
+    each would need to reproduce the dip. Source: Gaia DR3, or the TESS Input Catalog when Gaia is unreachable. About 5 s."""
     a = {"tic": tic, "sector": sector, "depth_ppm": depth_ppm}
     return await _run("neighbors", "light", ctx, a, lambda: core.neighbors(tic, sector, depth_ppm))
 
 
 @mcp.tool(title="Phase-folded plot", annotations=READ)
 async def fold_plot(tic: int, sectors: list[int], period_d: float, t0: float, ctx: Context) -> list:
-    """Fold up to 4 sectors at a period and epoch and overlay them. Useful to see whether the dip lines up across sectors."""
+    """Phase-folded overlay of up to 4 sectors at a given period and epoch. Output: binned fold and plot. About 5 s when cached."""
     a = {"tic": tic, "sectors": sorted(set(sectors))[:4], "period_d": period_d, "t0": t0}
     return await _run("fold_plot", "light", ctx, a, lambda: core.fold_plot(tic, a["sectors"], period_d, t0))
 
@@ -150,9 +152,9 @@ def _followup_args(tic, period_d, t0, duration_h, depth_ppm):
 
 @mcp.tool(title="Multi-sector follow-up (analysis only)", annotations=READ)
 async def followup_start(tic: int, period_d: float, t0: float, duration_h: float, depth_ppm: float, ctx: Context) -> dict:
-    """The decisive test, read-only: analyse every sector that observed the star for the same signal, then refine the period on the stitched
-    baseline. It only reads public data and computes; nothing is created or changed anywhere. The analysis takes 1-5 minutes, so this
-    returns a job_id at once; call job_status(job_id), which waits and reports progress, until it says done."""
+    """Start the multi-sector test (read-only analysis): independent search of every observed sector, stitched period refinement,
+    per-sector agreement at the stitched ephemeris, and a per-sector secondary check. Returns a job_id immediately; read the result with
+    job_status. 1-5 min, at most 12 sectors."""
     a = _followup_args(tic, period_d, t0, duration_h, depth_ppm)
     k = store.key("followup", a)
     sid = store.session_id(dict(ctx.headers) if ctx.headers else {})
@@ -168,9 +170,9 @@ async def followup_start(tic: int, period_d: float, t0: float, duration_h: float
 
 @mcp.tool(title="Follow-up job status", annotations=READ)
 async def job_status(job_id: str, ctx: Context, wait_s: float = 20.0) -> list:
-    """Result of a follow-up job. Waits up to wait_s seconds (default 20, max 25) for it to finish, sending live progress
-    (which sector is being analysed) while it waits, so one or two calls are usually enough. Returns queued or running with
-    the latest progress line, failed with the reason, or done with the full result and the stitched fold plot."""
+    """Result of a follow-up job. Waits up to wait_s seconds (default 20, max 25) and streams progress while it waits. Output: queued or running
+    with the latest progress line, failed with the reason, or done with status (repeats, does_not_repeat, eclipsing_binary, not_significant,
+    inconclusive, single_sector_only), per-sector checks, stitched ephemeris and fold plot."""
     if not re.fullmatch(r"[0-9a-f]{20}", job_id):
         raise ToolError("job_id is the 20-character id returned by followup_start")
     sid = store.session_id(dict(ctx.headers) if ctx.headers else {})
@@ -200,11 +202,9 @@ DECIDING = ("centroid", "secondary", "odd_even", "duration", "recovery", "catalo
 
 @mcp.tool(title="Record a verdict", annotations=NOTE)
 async def report_verdict(tic: int, verdict: str, reason: str, ctx: Context, hold: bool = False, deciding_test: str = "other") -> dict:
-    """Optional: record the final call on a star after working through the procedure. verdict is one of
-    candidate, eclipsing_binary, blend_or_off_target, systematics_or_noise, known_object, undecided. reason: one or two sentences citing the numbers.
-    hold=true means "keep it, but it is not ready to report" (grazing transit, diluted depth, needs a mass). deciding_test names the test that
-    settled it: centroid, secondary, odd_even, duration, recovery, catalog, dilution, snr or other.
-    Verdicts are logged anonymously with the other tool calls; nothing is published or submitted anywhere."""
+    """Record a verdict on a star that is not from the leads queue. verdict: candidate, eclipsing_binary, blend_or_off_target,
+    systematics_or_noise, known_object, undecided. reason: the deciding numbers. hold: plausible but not ready to stand as a candidate.
+    deciding_test: centroid, secondary, odd_even, duration, recovery, catalog, dilution, snr, other. Logged anonymously; nothing is submitted anywhere."""
     if verdict not in VERDICTS:
         raise ToolError(f"verdict must be one of {', '.join(VERDICTS)}")
     if deciding_test not in DECIDING:
@@ -228,23 +228,22 @@ def _lead_call(fn, *a, **k):
         raise ToolError(str(e)) from None
 
 
-@mcp.tool(title="Join the hunt", annotations=NOTE)
+@mcp.tool(title="Register a handle", annotations=NOTE)
 async def join(handle: str, ctx: Context) -> dict:
-    """Register a planet-hunter name (3-20 letters, digits, dash or underscore) to take leads and be credited on the public board.
-    Returns a hunter_id: tell the user to keep it, because it is how they continue as the same hunter in a later session."""
+    """Register a handle (3-20 letters, digits, dash, underscore) for the leads queue and the public board. Output: hunter_id, the credential
+    for every queue and sky call; it must be kept to continue as the same handle in a later session."""
     out = _lead_call(leads.join, handle)
     store.trace(_sid(ctx), "join", {"handle": out["handle"]}, {"joined": True}, 0, False)
-    return out | {"plain": f"You are now a planet hunter, signed in as {out['handle']}. Keep your hunter_id; it is how you pick up where you left off.",
-                  "next": f"next_lead(hunter_id='{out['hunter_id']}')"}
+    return out | {"summary": f"Registered handle {out['handle']}. hunter_id is the credential for queue and sky calls; it is not recoverable if lost.",
+                  "next_actions": [core.act("next_lead", "take an unvetted lead", hunter_id=out["hunter_id"]),
+                                   core.act("open_patch", "search unsearched sky", hunter_id=out["hunter_id"])]}
 
 
 @mcp.tool(title="Get a lead", annotations=NOTE)
 async def next_lead(hunter_id: str, ctx: Context, star_type: str | None = None, planet_size: str | None = None) -> dict:
-    """Take the next unchecked lead: a star where the bulk search saw a repeating dip. Returns the star, the signal, and the exact values to
-    pass to the tests. The lead is held for you for 30 minutes.
-    Optional filters, for a hunter who wants a particular kind: star_type = red, orange, yellow or white (yellow is Sun-like);
-    planet_size = rocky (under 1.8 Earth radii), sub_neptune, neptune or giant, judged from the dip's depth if it were a planet.
-    When nothing matches, the reply says what is available instead."""
+    """Take the next unvetted lead: a star where a search found a transit-shaped signal. Output: star, signal, and the arguments for the
+    tests. Held for 30 minutes. Filters: star_type (red, orange, yellow, white) and planet_size (rocky under 1.8 Earth radii, sub_neptune,
+    neptune, giant; from the dip depth). When nothing matches, returns counts of what is available. practice=true marks a known star kept for testing."""
     if star_type and star_type not in leads.STAR_TYPES:
         raise ToolError(f"star_type must be one of {', '.join(leads.STAR_TYPES)}")
     if planet_size and planet_size not in leads.PLANET_SIZES:
@@ -253,39 +252,26 @@ async def next_lead(hunter_id: str, ctx: Context, star_type: str | None = None, 
     if lead is None:
         avail = _lead_call(leads.available, hunter_id)
         if avail["open_for_you"] and (star_type or planet_size):
-            return {"lead": None, "available": avail,
-                    "plain": "No open lead matches that filter. Here is what is in the queue for you; pick from these or drop the filter.",
-                    "next": "tell the user what kinds are available and call next_lead again with a filter that has leads, or with none"}
+            return {"lead": None, "available": avail, "summary": "No open lead matches the filter. See available for counts by star type and size.",
+                    "next_actions": [core.act("next_lead", "next lead without a filter", hunter_id=hunter_id)]}
         return {"lead": None, "available": avail,
-                "plain": "There are no open leads you have not already vetted. New leads come from searching new sky, and you can do that yourself: "
-                         "open a patch of about 150 unsearched stars and your computer searches it in about seven minutes. "
-                         "Patches come in three star types: red (best odds), orange, and yellow (Sun-like, giant planets only).",
-                "next": f"offer to open a patch: open_patch(hunter_id='{hunter_id}', star_type='red' | 'orange' | 'yellow'); or sky_map() to show coverage first"}
+                "summary": "No open leads for this handle. New leads come from searching patches of unsearched sky (about 150 stars, about seven minutes on the user's computer).",
+                "next_actions": [core.act("open_patch", "search an unsearched patch", hunter_id=hunter_id), core.act("sky_map", "coverage and patches ready")]}
     star = lead["star"]
-    desc = []
-    if star.get("Tmag") is not None:
-        desc.append(f"TESS magnitude {star['Tmag']:.1f}")
-    if star.get("rad"):
-        desc.append(f"{star['rad']:.2f} times the Sun's radius")
-    if star.get("d"):
-        desc.append(f"{star['d'] * 3.26:.0f} light-years away")
-    vals = f"period_d={lead['period_d']:.6f}, t0={lead['t0']:.5f}, duration_h={lead['duration_h']:.2f}"
-    if lead.get("star_type"):
-        desc.insert(0, f"a {lead['star_type']} star")
-    size = (f" If it is a planet it would be about {lead['radius_earth_if_planet']:.1f} times Earth's radius ({lead['size_if_planet'].replace('_', '-')})."
-            if lead.get("radius_earth_if_planet") else "")
-    lead["brief"] = (f"Lead {lead['lead_id']}: TIC {lead['tic']}" + (f" ({', '.join(desc)})" if desc else "") +
-                     f". In sector {lead['sector']} the automatic search saw a dip of {lead['depth_ppm']/1e4:.2f}% every {lead['period_d']:.3f} days.{size} " +
-                     ("PRACTICE LEAD: a well-known star kept for practice, so expect a known planet or a known impostor. Tell the user so. "
-                      if lead.get("practice") else
-                      (f"It came from a patch of sky searched by {lead['found_by']}. " if lead.get("found_by") else "") + "Nobody has checked whether it is real. ")
-                     + "Your job is to try to break it.")
-    lead["odds"] = "Most leads turn out to be eclipsing binaries, spotted stars or a neighbour's eclipse. Roughly 1 in 10 survives."
+    sig = {"period_d": lead["period_d"], "t0": lead["t0"], "duration_h": lead["duration_h"]}
+    kind = f"{lead['star_type']} star" if lead.get("star_type") else "star"
+    tm = f", Tmag {star['Tmag']:.1f}" if star.get("Tmag") is not None else ""
+    size = f" Implies {lead['radius_earth_if_planet']:.1f} Earth radii if planetary." if lead.get("radius_earth_if_planet") else ""
+    origin = ("Practice lead: a known star kept for testing." if lead.get("practice")
+              else (f"From a patch searched by {lead['found_by']}. Unvetted." if lead.get("found_by") else "Unvetted."))
+    lead["summary"] = (f"Lead {lead['lead_id']}. TIC {lead['tic']}, {kind}{tm}, sector {lead['sector']}. Search: {lead['depth_ppm']:.0f} ppm dip, "
+                       f"P {lead['period_d']:.4f} d, SNR {lead['search_snr']:.1f}.{size} {origin}")
     lead["available"] = _lead_call(leads.available, hunter_id)
-    lead["next"] = (f"1) catalog_check(tic={lead['tic']})  2) vet_signal(tic={lead['tic']}, sector={lead['sector']}, {vals})  "
-                    f"3) neighbors(tic={lead['tic']}, sector={lead['sector']}, depth_ppm={lead['depth_ppm']:.0f})  "
-                    f"4) followup_start(tic={lead['tic']}, {vals}, depth_ppm={lead['depth_ppm']:.0f}) then job_status until done  "
-                    f"5) submit_vet(hunter_id, lead_id={lead['lead_id']}, verdict, reason, deciding_test). Use these exact values so your result can be checked.")
+    lead["next_actions"] = [core.act("catalog_check", "prior claims on this star", tic=lead["tic"]),
+                            core.act("vet_signal", "false-positive tests", tic=lead["tic"], sector=lead["sector"], **sig),
+                            core.act("followup_start", "repetition across sectors", tic=lead["tic"], depth_ppm=lead["depth_ppm"], **sig)]
+    lead["submit"] = {"tool": "submit_vet", "args": {"hunter_id": hunter_id, "lead_id": lead["lead_id"]}, "also_needs": ["verdict", "reason", "deciding_test"],
+                      "precondition": "vet_signal and a finished follow-up with the arguments above"}
     store.trace(_sid(ctx), "next_lead", {"tic": lead["tic"], "lead_id": lead["lead_id"]}, {"tic": lead["tic"], "lead_id": lead["lead_id"]}, 0, False)
     return lead
 
@@ -308,13 +294,12 @@ def _auto_status(lead):
     return (f["status"] if f["status"] != "repeats" else v["verdict"]), True, True
 
 
-@mcp.tool(title="Submit your verdict on a lead", annotations=NOTE)
+@mcp.tool(title="Submit a verdict on a lead", annotations=NOTE)
 async def submit_vet(hunter_id: str, lead_id: int, verdict: str, reason: str, ctx: Context, deciding_test: str = "other", hold: bool = False) -> dict:
-    """Record your verdict on a lead after running the tests on it. verdict: candidate, eclipsing_binary, blend_or_off_target,
-    systematics_or_noise, known_object or undecided. reason: one or two sentences citing the numbers. deciding_test: centroid, secondary,
-    odd_even, duration, recovery, catalog, dilution, snr or other. hold=true means it looks real but is not ready to stand as a candidate.
-    Refused until vet_signal and a finished follow-up have been run with the lead's exact values. A lead joins the public board only when
-    two different hunters call it a candidate and the server's own results agree."""
+    """Record a verdict on a lead. verdict: candidate, eclipsing_binary, blend_or_off_target, systematics_or_noise, known_object, undecided.
+    reason: the deciding numbers. deciding_test: centroid, secondary, odd_even, duration, recovery, catalog, dilution, snr, other. hold: plausible
+    but not ready. Refused until vet_signal and a finished follow-up exist for the lead's exact values. A lead reaches the board only with two
+    candidate verdicts from different handles and agreement from the server's own results."""
     if verdict not in VERDICTS:
         raise ToolError(f"verdict must be one of {', '.join(VERDICTS)}")
     if deciding_test not in DECIDING:
@@ -333,18 +318,18 @@ async def submit_vet(hunter_id: str, lead_id: int, verdict: str, reason: str, ct
     status, info = _lead_call(leads.record, hunter_id, lead_id, verdict, hold, deciding_test, reason, auto, store.seen(sid, lead["tic"]))
     me = leads.stats(hunter_id); bd = leads.board(limit=1)
     if status == "surviving":
-        plain = f"Lead {lead_id} has survived two independent vets and the server's own tests. It is now on the public board as an unconfirmed planet candidate."
+        summary = f"Lead {lead_id}: surviving. Two candidate verdicts and agreement from the server's results. Listed on the board as an unconfirmed planet candidate."
     elif status == "cleared":
-        plain = f"Lead {lead_id} is cleared: not a planet candidate. Clearing impostors is most of the work, and this one is now off everyone's list."
+        summary = f"Lead {lead_id}: cleared. Not a planet candidate. Server reading: {auto}."
     elif verdict == "candidate" and info["server_agrees_candidate"]:
-        plain = f"Your vote is in and the server's tests agree. Lead {lead_id} now waits for a second planet hunter to vet it independently before it can go on the board."
+        summary = f"Lead {lead_id}: open. Candidate verdict recorded and the server's results agree. Awaiting a second independent vet."
     elif verdict == "candidate":
-        plain = f"Your vote is recorded, but the server's own results read this lead as '{auto}', so it cannot go on the board. Another planet hunter will take a look."
+        summary = f"Lead {lead_id}: open. Candidate verdict recorded; the server's results read it as {auto}, so it cannot be listed. Awaiting another vet."
     else:
-        plain = f"Recorded. The server's own results read this lead as '{auto}'; another planet hunter will take a second look."
-    out = {"lead_id": int(lead_id), "lead_status": status, "server_reading": auto, **info, "plain": plain,
-           "you": me, "board": {k: bd[k] for k in ("leads_total", "leads_open", "leads_cleared", "leads_surviving")},
-           "next": f"next_lead(hunter_id='{hunter_id}') for another, or board() to see the standings"}
+        summary = f"Lead {lead_id}: open. Verdict recorded; the server's results read it as {auto}. Awaiting another vet."
+    out = {"lead_id": int(lead_id), "lead_status": status, "server_reading": auto, **info, "summary": summary,
+           "handle_tally": me, "board": {k: bd[k] for k in ("leads_total", "leads_open", "leads_cleared", "leads_surviving")},
+           "next_actions": [core.act("next_lead", "next unvetted lead", hunter_id=hunter_id)]}
     store.trace(sid, "submit_vet", {"tic": lead["tic"], "lead_id": int(lead_id), "verdict": verdict, "hold": bool(hold), "deciding_test": deciding_test,
                                     "reason": reason[:600], "auto_status": auto, "tools_seen": store.seen(sid, lead["tic"])},
                 {"lead_status": status}, 0, False)
@@ -353,33 +338,30 @@ async def submit_vet(hunter_id: str, lead_id: int, verdict: str, reason: str, ct
 
 @mcp.tool(title="The board", annotations=READ)
 async def board(ctx: Context) -> dict:
-    """Public standings: how many leads are open, cleared and surviving, the surviving candidates with the hunters who vetted them,
-    leads waiting for a second vet, and the most active hunters."""
+    """Public standings: leads open, cleared and surviving; surviving candidates with finder and vetters; leads awaiting a second vet;
+    most active handles."""
     return leads.board()
 
 
-@mcp.tool(title="My progress", annotations=READ)
+@mcp.tool(title="Handle tally", annotations=READ)
 async def my_progress(hunter_id: str, ctx: Context) -> dict:
-    """How many leads this hunter has vetted, their verdicts, and how many of their candidates are on the board."""
+    """Tally for one handle: leads vetted, verdict mix, candidates on the board, leads found by their patch searches."""
     return _lead_call(leads.stats, hunter_id)
 
 
-@mcp.prompt(title="Hunt: vet real leads")
+@mcp.prompt(title="Vet leads from the queue")
 def hunt() -> str:
-    """The guided hunting loop over the leads queue."""
-    return """Let's hunt with Kepler. Guide me; assume I am new to this.
+    """Procedure: take leads from the queue, test each, record a verdict. Opens a patch when the queue is empty."""
+    return """Procedure: vet leads with Kepler.
 
-1. Ask me for a planet-hunter name and call join. Tell me to keep the hunter_id.
-2. Call next_lead. If I asked for a kind of star or planet (a Sun-like star, a rocky planet), pass star_type or planet_size; if none matches, tell me what is
-   available. Read me the brief in your own words: which star, what the search saw, and that most leads are impostors.
-3. Work through the lead's `next` steps one at a time, with the exact values given. Before each test say in a sentence what impostor it is looking for;
-   after it, say what the result means (`plain`) and show the two or three numbers that matter. Show me the plots.
-4. When the tests are done, tell me your verdict and why, ask whether I agree, then call submit_vet.
-5. Tell me what happened to the lead and where I stand, then ask whether I want another. Stop after five leads unless I ask for more.
-6. If no lead is waiting, offer to open a patch of sky (open_patch). Explain that my computer will search about 150 unsearched stars in about seven minutes
-   and that most patches find nothing. Run the command if you can, or give it to me to paste. Then patch_status, and vet whatever it found.
+1. join(handle) if there is no hunter_id yet. Keep the hunter_id.
+2. next_lead(hunter_id), with star_type or planet_size if a kind was requested. If none: open_patch(hunter_id), run its command, patch_status, then next_lead.
+3. Run the lead's next_actions with the given arguments: catalog_check, vet_signal, followup_start, then job_status until done. Add neighbors with the lead's depth.
+4. Decide: candidate, eclipsing_binary, blend_or_off_target, systematics_or_noise, known_object, or undecided. Cite the deciding numbers.
+5. submit_vet(hunter_id, lead_id, verdict, reason, deciding_test). Report the lead's new status.
+6. Repeat from 2. Stop after five leads or when asked.
 
-Say "planet candidate", never "planet" or "discovered". Every number must come from a tool run in this conversation. If a tool fails, retry once, then say the step could not be done."""
+Constraints: "planet candidate", never "planet" or "discovered". Numbers only from tool results in this conversation. On a tool error, retry once, then report the step as not done."""
 
 
 # ---------------- the sky map: patches searched on hunters' own computers ----------------
@@ -440,9 +422,9 @@ def _base_url(ctx):
 
 @mcp.tool(title="The sky map", annotations=READ)
 async def sky_map(ctx: Context, sector: int | None = None) -> dict:
-    """Which patches of sky have been searched and which are still unopened, per sector, detector and star type, with leads found so far.
-    A patch is about 150 faint stars of one type (red, orange or yellow) that nobody has searched; opening one runs the search on the
-    planet hunter's own computer (about seven minutes) and the result is kept for everyone. `star_types` says what each type can reveal."""
+    """Search coverage per sector, detector and star type: patches searched, unopened and in progress, stars searched, leads found. A patch is
+    about 150 unsearched stars of one type, searched on the user's own computer in about seven minutes and stored for everyone. star_types
+    states what each type can detect. Triggers mapping of the next detector when no patch is ready."""
     out = sky.summary(sector)
     t = out["totals"]
     if t["unopened"] == 0 and not out["detectors_being_mapped"] and not sky.PAUSED:
@@ -450,23 +432,21 @@ async def sky_map(ctx: Context, sector: int | None = None) -> dict:
         if nxt:
             out["detectors_being_mapped"] = [{"sector": nxt[0], "camera": nxt[1], "ccd": nxt[2], "star_type": "red"}]
     if t["patches"] == 0:
-        out["plain"] = ("No patches are mapped yet. Kepler is listing the stars on the first detector now, which takes about five minutes the first time. "
-                        "Meanwhile there may be leads waiting (next_lead).")
-        out["next"] = "tell the user the first patches are being prepared, offer a waiting lead, and call sky_map again in a few minutes"
+        out["summary"] = "No patches mapped yet. The first detector is being mapped; patches are ready in about five minutes."
+        out["next_actions"] = []
     else:
-        out["plain"] = (f"{t['searched']} of {t['patches']} mapped patches have been searched ({t['stars_searched']} stars), finding {t['leads_found']} lead(s). "
-                        f"{t['unopened']} patch(es) are unopened and ready.")
-        out["next"] = "offer the user a waiting lead (next_lead) or a fresh patch of sky (open_patch)"
+        out["summary"] = (f"{t['searched']} of {t['patches']} mapped patches searched ({t['stars_searched']} stars), {t['leads_found']} lead(s) found, "
+                          f"{t['unopened']} unopened, {t['in_progress']} in progress.")
+        out["next_actions"] = []
     return out
 
 
 @mcp.tool(title="Open a patch of sky", annotations=NOTE)
 async def open_patch(hunter_id: str, ctx: Context, patch_id: str | None = None, star_type: str | None = None) -> dict:
-    """Claim an unsearched patch of sky (about 150 stars) for this planet hunter and get the one command that searches it on their own computer.
-    star_type picks the kind of star: red (default; small red dwarfs, best odds), orange, or yellow (faint Sun-like stars, where only giant
-    planets can show). The search takes about seven minutes, reads NASA's public data directly, and uploads only the results. The patch is
-    held for two hours. If you can run shell commands, run the returned command for the user and relay its progress; otherwise ask them to
-    paste it into a terminal. If no patch of that type is mapped yet, this starts the mapping (several minutes) and says so."""
+    """Claim an unsearched patch (about 150 stars) and get the command that searches it on the user's computer. star_type: red (default),
+    orange, or yellow. The search takes about seven minutes, reads NASA's public TESS files, and uploads one row of numbers per star. Held for
+    two hours. The command needs a shell with Python 3.11+; the first run installs the science libraries. If no patch of that type is mapped,
+    mapping starts and takes several minutes."""
     if star_type and star_type not in sky.POPULATIONS:
         raise ToolError(f"star_type must be one of {', '.join(sky.POPULATIONS)}; white and hotter stars are not offered")
     pop = star_type or (None if patch_id else "red")
@@ -475,25 +455,22 @@ async def open_patch(hunter_id: str, ctx: Context, patch_id: str | None = None, 
         nxt = None if sky.PAUSED else _map_next(pop or "red")
         kind = pop or "red"
         return {"patch": None, "star_type": kind,
-                "plain": (f"No {kind}-star patch is ready yet. Kepler is listing the unsearched {kind} stars on the next detector now; "
-                          f"patches appear in about {'ten to twenty' if kind == 'yellow' else 'five to ten'} minutes. " + sky.POPULATIONS[kind]["finds"]
-                          if nxt else "There are no unopened patches right now."),
-                "ready_now": sky.summary()["unopened_by_star_type"],
-                "next": "offer a patch of a star type that is ready now, or a waiting lead with next_lead, and try this again in a few minutes"}
+                "summary": (f"No unopened {kind} patch. Mapping the next detector for {kind} stars; ready in about {'10-20' if kind == 'yellow' else '5-10'} minutes."
+                            if nxt else "No unopened patches."),
+                "ready_now": sky.summary()["unopened_by_star_type"], "next_actions": []}
     cmd = f"{SWEEP_CMD} {p['id']} --hunter {hunter_id} --hub {_base_url(ctx)}"
     store.trace(_sid(ctx), "open_patch", {"patch_id": p["id"]}, {"patch_id": p["id"]}, 0, False)
-    return {"patch_id": p["id"], "sector": p["sector"], "star_type": p["pop"], "stars": p["n_stars"], "held_until_minutes": int((p["claimed_until"] - time.time()) / 60),
-            "command": cmd, "resumed": p["resumed"], "what_this_can_find": sky.POPULATIONS[p["pop"]]["finds"],
-            "plain": (f"Patch {p['id']} is yours: {p['n_stars']} faint {p['pop']} stars in sector {p['sector']} that nobody has searched. "
-                      "The search runs on your computer and takes about seven minutes. Many patches turn up nothing; when one finds a signal it becomes a lead under your name."),
-            "first_time": "The first run installs the science libraries, which takes a few minutes once. It needs Python 3.11 or newer.",
-            "next": f"run the command (or ask the user to), then call patch_status(patch_id='{p['id']}') to see what came back"}
+    return {"patch_id": p["id"], "sector": p["sector"], "star_type": p["pop"], "stars": p["n_stars"], "held_minutes": int((p["claimed_until"] - time.time()) / 60),
+            "command": cmd, "resumed": p["resumed"], "detectable": sky.POPULATIONS[p["pop"]]["finds"],
+            "summary": (f"Patch {p['id']} claimed: {p['n_stars']} unsearched {p['pop']} stars, sector {p['sector']}. Run `command` on the user's computer "
+                        "(about seven minutes; Python 3.11+; first run installs the science libraries). It uploads one row per star."),
+            "next_actions": [core.act("patch_status", "result of the search, after the command finishes", patch_id=p["id"])]}
 
 
 @mcp.tool(title="Patch status", annotations=READ)
 async def patch_status(patch_id: str, ctx: Context, wait_s: float = 20.0) -> dict:
-    """What happened to a patch: unopened, claimed (search not uploaded yet), verifying (the hub is re-checking the signals), or done with the
-    leads it produced. Waits up to wait_s seconds (max 25) while the hub is verifying."""
+    """State of a patch: unopened, claimed (no upload yet), verifying (the hub is re-running flagged stars), or done with the number of
+    leads produced. Waits up to wait_s seconds (max 25) while verifying."""
     deadline = time.time() + max(0.0, min(float(wait_s), 25.0))
     while True:
         p = _sky_call(sky.get, patch_id)
@@ -502,17 +479,17 @@ async def patch_status(patch_id: str, ctx: Context, wait_s: float = 20.0) -> dic
         await anyio.sleep(1.0)
     out = {"patch_id": patch_id, "status": p["status"], "stars": p["n_stars"], "opened_by": p["opened_by"], "signals_flagged": p["n_flagged"], "leads": p["n_leads"]}
     if p["status"] == "done":
-        out["plain"] = (f"Patch searched and stored. {p['n_leads']} signal(s) passed the hub's own re-check and joined the leads queue, credited to {p['opened_by']}."
-                        if p["n_leads"] else "Patch searched and stored. Nothing in it passed the checks, which is the usual result; that sky is now cleared for everyone.")
-        out["next"] = "next_lead to vet what was found" if p["n_leads"] else "open another patch with open_patch, or take a waiting lead"
+        out["summary"] = f"Patch {patch_id}: searched and stored. {p['n_leads']} lead(s) passed the hub's re-check" + (f", credited to {p['opened_by']}." if p["n_leads"] else ".")
+        out["next_actions"] = []
     elif p["status"] == "verifying":
-        out["plain"] = f"Results received. The hub is re-running {p['n_flagged']} flagged star(s) itself before they become leads."
-        out["next"] = "call patch_status again"
+        out["summary"] = f"Patch {patch_id}: upload received. Re-running {p['n_flagged']} flagged star(s)."
+        out["next_actions"] = [core.act("patch_status", "verification result", patch_id=patch_id)]
     elif p["status"] == "claimed":
-        out["plain"] = "The patch is held but no results have arrived yet. The search command is still running, or has not been started."
-        out["next"] = "wait for the search command to finish, then call patch_status again"
+        out["summary"] = f"Patch {patch_id}: claimed by {p['opened_by']}, no upload yet."
+        out["next_actions"] = [core.act("patch_status", "after the search command finishes", patch_id=patch_id)]
     else:
-        out["plain"] = "This patch is unopened." + (f" (Last attempt was rejected: {p['note']})" if p.get("note") else "")
+        out["summary"] = f"Patch {patch_id}: unopened." + (f" Last upload rejected: {p['note']}" if p.get("note") else "")
+        out["next_actions"] = []
     return out
 
 
@@ -563,32 +540,12 @@ def guide() -> str:
     return _guide()
 
 
-@mcp.tool(title="Read the vetting guide", annotations=READ)
+@mcp.tool(title="Vetting reference", annotations=READ)
 async def read_guide(ctx: Context) -> str:
-    """How transit signals fool you: common impostors, the test that catches each, how to read the numbers, and this server's limits.
-    Background only: it does not replace running the tools on the star you were asked about."""
+    """Vetting reference: common false positives and the test for each, how to read the numbers, verdict definitions, limits of this server.
+    Background only; not evidence about any star."""
     return _guide()
 
-
-WELCOME = {
-    "greeting": "Welcome to Kepler, planet hunter. Let's hunt for planets.",
-    "about": "Kepler searches NASA's TESS space-telescope data for planets crossing in front of their stars, then tries hard to prove each signal wrong. "
-             "What survives is a planet candidate. (Named for Johannes Kepler; the data is from TESS.)",
-    "paths": [
-        {"name": "Learn", "time": "about 10 minutes",
-         "what": "Find a planet that astronomers already know about, starting from raw telescope pixels, with every step explained.",
-         "how": "call lesson"},
-        {"name": "Hunt", "time": "5 to 10 minutes per lead",
-         "what": "Take a real lead that nobody has checked yet: a star where a search saw a repeating dip. Try to break it. "
-                 "If it survives your tests and a second planet hunter's, it goes on the public board with your name. "
-                 "When the queue is empty you can open a fresh patch of sky: your own computer searches about 150 stars nobody has looked at, in about seven minutes.",
-         "odds": "Most leads are impostors: eclipsing binaries, spotted stars, a neighbour's eclipse. Expect roughly 1 in 10 to survive.",
-         "how": "ask the user for a planet-hunter name, call join, then next_lead; if no lead is waiting, sky_map and open_patch"},
-        {"name": "Bring your own star", "time": "a few minutes",
-         "what": "Name any star TESS observed and run the full check on it.", "how": "follow the check_star procedure"},
-    ],
-    "say": "Greet the user with the greeting, describe Learn and Hunt in a sentence each, mention they can also bring their own star, and ask which they want. Keep it short.",
-}
 
 LESSON = {
     "star": "Pi Mensae", "goal": "Recover the planet pi Mensae c from raw TESS full-frame images, and understand each test along the way.",
@@ -615,41 +572,27 @@ LESSON = {
 }
 
 
-@mcp.tool(title="Welcome to Kepler", annotations=READ)
-async def welcome(ctx: Context) -> dict:
-    """Start here. Returns the greeting and the paths a newcomer can take (Learn, Hunt, or bring your own star). Call it when the user
-    first arrives, greets you, or asks what they can do."""
-    return WELCOME
-
-
 @mcp.tool(title="Guided lesson: recover a known planet", annotations=READ)
 async def lesson(ctx: Context) -> dict:
-    """The Learn path: a five-step guided lesson that recovers a known planet (pi Mensae c) from raw data. Returns the steps, what to explain
-    at each, and a question to ask the user. Run the real tools at each step; nothing is canned."""
+    """Opt-in guided lesson: five steps that recover a known planet (pi Mensae c) from raw data, with what to explain and a question to ask
+    at each step. The tools are run for real at each step."""
     return LESSON
-
-
-@mcp.prompt(title="Start: welcome to Kepler")
-def start() -> str:
-    """Greets the user and offers Learn or Hunt."""
-    return "Call the Kepler `welcome` tool and greet me as it says. Offer me the paths and ask which I want."
 
 
 @mcp.prompt(title="Check one star end to end")
 def check_star(star: str) -> str:
-    """The fixed per-star procedure, with the language rules."""
-    return f"""Check the star "{star}" for a transiting planet candidate using the Kepler tools. Work in this order and show the numbers at each step.
+    """Procedure: full check of one named star."""
+    return f"""Procedure: check "{star}" for a transiting planet candidate with Kepler.
 
-1. read_guide (or the kepler://guide resource) for the impostors to rule out. It is background: every number in your answer must come from a tool run in this conversation.
-2. resolve_star. Note the radius, magnitude, contamination ratio and observed sectors.
-3. catalog_check. If it is a known planet host or TOI, say so: anything you find is a recovery, not something new.
-4. search_transits on the earliest observed sector. If SNR is under 8 or the bar fails for shape reasons, try one more sector (a later one has finer time sampling), then stop and report "no convincing signal".
-5. vet_signal with the period, t0 and duration from the search. Look at the phase-curve panel yourself for a second dip.
-6. neighbors with the measured depth. Name any star that could fake the dip.
-7. followup_start with the same signal, then job_status until done. The signal must repeat in at least max(2, usable-1) sectors.
-8. Verdict, one of: candidate, eclipsing_binary, blend_or_off_target, systematics_or_noise, known_object, undecided. Give the two or three numbers that decided it and what observation would settle it. Optionally call report_verdict.
+1. resolve_star. Record radius, magnitude, contamination ratio, sectors.
+2. catalog_check. A signal on a known host or TOI is a recovery.
+3. search_transits on the earliest sector. If SNR is under 8 or the bar fails on shape, try one later sector, then stop: no signal.
+4. vet_signal with the search's period, t0 and duration. Inspect the phase-curve panel for a second dip.
+5. neighbors with the measured depth.
+6. followup_start with the same signal, then job_status until done.
+7. Verdict: candidate, eclipsing_binary, blend_or_off_target, systematics_or_noise, known_object, or undecided, with the deciding numbers and the observation that would settle it. Optionally report_verdict.
 
-Language: say "planet candidate", never "planet" or "discovered". A tool error is not evidence about the star; retry or say the step could not be done."""
+Constraints: "planet candidate", never "planet" or "discovered". Numbers only from tool results in this conversation. A tool error is not a result about the star."""
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -694,8 +637,7 @@ async def patch_post(request):
     except Exception:
         return JSONResponse({"error": "the upload could not be read"}, status_code=400)
     store._pool.submit(_verify_patch, pid, handle, flagged, quiet)
-    return JSONResponse({"received": True, "status": "verifying", "signals_flagged": len(flagged),
-                         "message": f"Results received. The hub is re-checking {len(flagged)} flagged star(s) before they become leads."})
+    return JSONResponse({"received": True, "status": "verifying", "signals_flagged": len(flagged)})
 
 
 @mcp.custom_route("/board.json", methods=["GET"])
@@ -732,16 +674,16 @@ p.sub{{color:var(--mut);margin:0 0 24px}} .tiles{{display:grid;grid-template-col
 th,td{{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}} th{{color:var(--mut);font-weight:500;font-size:13px}}
 .none{{color:var(--mut)}} ul{{list-style:none;padding:0;columns:2}} li span{{color:var(--mut);font-size:13px}} .note{{color:var(--mut);font-size:14px;margin-top:32px;border-top:1px solid var(--line);padding-top:16px}}
 .surv b{{color:var(--acc)}}</style></head><body><main>
-<h1>Kepler board</h1><p class="sub">Planet hunters and their AI assistants searching NASA TESS data and vetting what they find.</p>
-<div class="tiles"><div class="tile surv"><b>{b['leads_surviving']}</b><span>surviving candidates</span></div>
+<h1>Kepler board</h1><p class="sub">Planet candidates and search coverage from NASA TESS full-frame images.</p>
+<div class="tiles"><div class="tile surv"><b>{b['leads_surviving']}</b><span>candidates</span></div>
 <div class="tile"><b>{b['leads_cleared']}</b><span>leads cleared</span></div><div class="tile"><b>{b['leads_open']}</b><span>leads open</span></div>
 <div class="tile"><b>{b['hunters']}</b><span>planet hunters</span></div><div class="tile"><b>{st['stars_searched']}</b><span>stars searched</span></div></div>
-<h2>Surviving candidates</h2><div class="wrap"><table><tr><th>Star</th><th>Period</th><th>Depth</th><th>Vetted by</th></tr>{rows(b['surviving'], 'vetted_by')}</table></div>
-<h2>Waiting for a second vet</h2><div class="wrap"><table><tr><th>Star</th><th>Period</th><th>Depth</th><th>First vet</th></tr>{rows(b['awaiting_second_vet'], 'first_vet_by')}</table></div>
-<h2>Sky searched</h2><div class="wrap"><table><tr><th>Where</th><th>Patches searched</th><th>Stars</th><th>Leads found</th></tr>{cover}</table></div>
-<h2>Who opened the sky</h2><ul>{openers}</ul>
-<h2>Most active planet hunters</h2><ul>{active}</ul>
-<p class="note">{e(b['note'])} A lead survives when two different planet hunters call it a candidate and the server's own tests agree.</p>
+<h2>Candidates</h2><div class="wrap"><table><tr><th>Star</th><th>Period</th><th>Depth</th><th>Vetted by</th></tr>{rows(b['surviving'], 'vetted_by')}</table></div>
+<h2>Awaiting second vet</h2><div class="wrap"><table><tr><th>Star</th><th>Period</th><th>Depth</th><th>First vet</th></tr>{rows(b['awaiting_second_vet'], 'first_vet_by')}</table></div>
+<h2>Sky coverage</h2><div class="wrap"><table><tr><th>Where</th><th>Patches searched</th><th>Stars</th><th>Leads found</th></tr>{cover}</table></div>
+<h2>Patches searched by</h2><ul>{openers}</ul>
+<h2>Leads vetted by</h2><ul>{active}</ul>
+<p class="note">{e(b['note'])} A lead is listed as a candidate after two independent candidate verdicts and agreement from the server's own tests.</p>
 </main></body></html>"""
     return HTMLResponse(page)
 

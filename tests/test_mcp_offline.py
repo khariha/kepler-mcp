@@ -109,7 +109,7 @@ def test_server_registers_tools_and_guide():
     names = anyio.run(go)
     assert names == {"resolve_star", "catalog_check", "light_curve", "search_transits", "vet_signal", "neighbors", "fold_plot",
                      "followup_start", "job_status", "report_verdict", "read_guide",
-                     "welcome", "lesson", "join", "next_lead", "submit_vet", "board", "my_progress",
+                     "lesson", "join", "next_lead", "submit_vet", "board", "my_progress",
                      "sky_map", "open_patch", "patch_status"}
     g = server._guide()
     assert "eccentric" in g and "TIC " not in g.replace("TESS Input Catalog", "")
@@ -268,7 +268,7 @@ def test_patches_are_built_claimed_and_released(tmp_data):
         sky.claim(b, "s7-c2-3-r01", now=1002)
     assert sky.claim(b, now=1002)["id"] == "s7-c2-3-r02"
     assert len(sky.stars_for(a, "s7-c2-3-r01")["stars"]) == 3
-    with pytest.raises(sky.SkyError, match="not held by you"):
+    with pytest.raises(sky.SkyError, match="not held by this handle"):
         sky.stars_for(b, "s7-c2-3-r01")
     assert sky.claim(b, "s7-c2-3-r01", now=1000 + sky.CLAIM_SECONDS + 1)["opened_by"] == "bob"      # ann's hold lapsed
 
@@ -350,3 +350,51 @@ def test_patches_by_star_type(tmp_data):
     assert sky.claim(a, pop="red")["id"] == "s7-c2-3-r01"         # a held yellow patch does not block asking for red
     assert sky.claim(a, pop="yellow")["resumed"]
     assert sky.claim(leads.join("bob")["hunter_id"], pop="orange") is None
+
+
+# ---------------- voice and result contract ----------------
+def test_next_actions_entries_are_callable_shapes():
+    import anyio
+    from tesshunt_mcp import core, server
+    a = core.act("vet_signal", "false-positive tests", tic=1, sector=7, period_d=np.float64(2.5), t0=1500.123456789, duration_h=1.0)
+    assert a == {"tool": "vet_signal", "args": {"tic": 1, "sector": 7, "period_d": 2.5, "t0": 1500.12345679, "duration_h": 1.0}, "why": "false-positive tests"}
+    json.dumps(a)
+    async def go():
+        return {t.name: t for t in await server.mcp.list_tools()}
+    tools = anyio.run(go)
+    # every tool name the server ever suggests must exist, and the arguments it suggests must be parameters of that tool
+    import inspect, re
+    src = inspect.getsource(server) + inspect.getsource(core)
+    for name, kwargs in re.findall(r'act\("(\w+)",\s*"[^"]*"((?:,\s*\w+=[^,)]+)*)', src):
+        assert name in tools, name
+        params = set(tools[name].input_schema["properties"])
+        for k in re.findall(r"(\w+)=", kwargs):
+            assert k in params, (name, k)
+
+
+def test_register_is_instrument_not_tour_guide():
+    import anyio, inspect, re
+    from tesshunt_mcp import core, leads, server, sky
+    async def go():
+        return await server.mcp.list_tools(), await server.mcp.list_prompts()
+    tools, prompts = anyio.run(go)
+    names = {t.name for t in tools}
+    assert "welcome" not in names and "start" not in {p.name for p in prompts} and "lesson" in names
+    texts = {"instructions": server.INSTRUCTIONS}
+    for t in tools:
+        if t.name != "lesson":                                   # the lesson keeps its teaching voice by decision
+            texts["tool " + t.name] = t.description or ""
+    for k, v in {**core.SUMMARY_VET, **core.SUMMARY_FOLLOW}.items():
+        texts["summary " + k] = v
+    for k, v in sky.POPULATIONS.items():
+        texts["population " + k] = v["finds"]
+    texts["hunt prompt"] = server.hunt(); texts["check_star prompt"] = server.check_star("X")
+    # every literal that feeds a summary or an error
+    for mod in (core, leads, sky, server):
+        src = inspect.getsource(mod)
+        src = src.split("LESSON = {")[0] + src.split("LESSON = {")[1].split("\n}\n", 1)[1] if "LESSON = {" in src else src
+        for i, m in enumerate(re.findall(r'(?:summary"\]?\s*[+=:]+\s*\(?f?|Error\(f?)"([^"]+)"', src)):
+            texts[f"{mod.__name__} literal {i}"] = m
+    banned = re.compile(r"(?i)\b(you|your|yours|let's|welcome|congratulations|great|awesome)\b|!")
+    bad = {k: banned.search(v).group(0) for k, v in texts.items() if banned.search(v)}
+    assert not bad, bad

@@ -25,9 +25,9 @@ def _http(url, payload=None, timeout=120):
             msg = json.loads(e.read()).get("error", str(e))
         except Exception:
             msg = str(e)
-        raise SystemExit(f"Kepler said: {msg}")
+        raise SystemExit(f"error (hub): {msg}")
     except urllib.error.URLError as e:
-        raise SystemExit(f"Could not reach Kepler at {url.split('/patch')[0]} ({e.reason}). Is the address right and the server up?")
+        raise SystemExit(f"error: hub unreachable at {url.split('/patch')[0]} ({e.reason})")
 
 
 def looks_like_a_signal(r):
@@ -54,8 +54,8 @@ def sweep(patch, hunter, hub=DEFAULT_HUB, workers=None, say=print):
                 pass
     todo = [s for s in stars if s["tic"] not in done]
     workers = workers or max(2, min(8, (os.cpu_count() or 4) - 1))
-    say(f"Patch {patch}: {len(stars)} stars in TESS sector {sector}." + (f" Resuming: {len(done)} already searched." if done else "")
-        + f" Searching with {workers} workers; expect about {max(1, round(len(todo) / (2.7 * workers)))} minutes.")
+    say(f"patch {patch}: {len(stars)} stars, sector {sector}, {workers} workers, est {max(1, round(len(todo) / (2.7 * workers)))} min"
+        + (f", resuming at {len(done)}" if done else ""))
     t0 = time.time(); last = 0; first_error = None
     if todo:
         with ProcessPoolExecutor(workers) as ex, open(path, "a") as f:
@@ -66,25 +66,24 @@ def sweep(patch, hunter, hub=DEFAULT_HUB, workers=None, say=print):
                 except Exception as e:
                     failures += 1; first_error = first_error or f"{type(e).__name__}: {e}"
                     if failures >= 5 and not done:
-                        raise SystemExit(f"The search cannot run on this computer: {first_error}")
+                        raise SystemExit(f"error: search cannot run here: {first_error}")
                     continue
                 done[r["tic"]] = r
                 f.write(json.dumps(r) + "\n"); f.flush()
                 if looks_like_a_signal(r):
-                    say(f"  TIC {r['tic']}: something here. A {r['depth_ppm']/1e4:.2f}% dip every {r['period_d']:.2f} days, seen {int(r['n_transits'])} times.")
+                    say(f"signal TIC {r['tic']}: depth {r['depth_ppm']/1e4:.2f}%, P {r['period_d']:.3f} d, n={int(r['n_transits'])}, SNR {r['snr']:.1f}")
                 if len(done) - last >= 10 or len(done) == len(stars):
                     last = len(done)
                     n_sig = sum(looks_like_a_signal(x) for x in done.values())
                     rate = (len(done) - (len(stars) - len(todo))) / max(time.time() - t0, 1e-9) * 60
                     left = (len(stars) - len(done)) / max(rate, 1e-9)
-                    say(f"  {len(done)} of {len(stars)} stars searched, {n_sig} possible signal(s), about {left:.0f} min left")
+                    say(f"[{len(done)}/{len(stars)}] {n_sig} signal(s), {left:.1f} min left")
     if len(done) < 0.9 * len(stars):
-        raise SystemExit(f"Only {len(done)} of {len(stars)} stars could be searched ({first_error if todo else 'no error recorded'}). "
-                         "Nothing was uploaded; run the same command again to continue.")
+        raise SystemExit(f"error: {len(done)} of {len(stars)} stars searched ({first_error if todo else 'no error recorded'}); nothing uploaded; rerun to resume")
     ok = sum(1 for r in done.values() if r["status"] == "ok")
-    say(f"Search finished: {ok} of {len(stars)} stars gave a usable light curve. Uploading results.")
+    say(f"search complete: {ok}/{len(stars)} usable light curves")
     res = _http(f"{hub}/patch/{patch}/results", {"hunter": hunter, "rows": list(done.values())})
-    say(res.get("message", "Uploaded."))
+    say(f"uploaded: {len(done)} rows, {res.get('signals_flagged', 0)} flagged for hub re-check")
     final = {"status": "verifying"}
     for _ in range(90):
         final = _http(f"{hub}/patch/{patch}/status")
@@ -93,15 +92,15 @@ def sweep(patch, hunter, hub=DEFAULT_HUB, workers=None, say=print):
         time.sleep(4)
     if final.get("status") == "done":
         n = final.get("n_leads", 0)
-        say(f"Done. {n} lead(s) from this patch joined the queue under your name." if n else "Done. Nothing here passed the checks, which is the usual result. This patch of sky is now cleared for everyone.")
+        say(f"patch {patch}: done, {n} lead(s) queued")
         try:
             os.remove(path)
         except OSError:
             pass
     elif final.get("status") == "verifying":
-        say("The hub is still verifying; ask Kepler for the patch status in a minute.")
+        say(f"patch {patch}: hub still verifying; check patch_status")
     else:
-        say(f"The hub did not accept this upload: {final.get('note') or final.get('status')}")
+        say(f"patch {patch}: upload not accepted: {final.get('note') or final.get('status')}")
     return final
 
 
@@ -145,7 +144,7 @@ def main():
     try:
         import lightkurve, astrocut  # noqa: F401
     except Exception:
-        sys.exit("The science libraries are missing. Install with:  pip install kepler-mcp   (or run through uvx / pipx)")
+        sys.exit("error: science libraries missing; install with: pip install kepler-mcp")
     final = sweep(a.patch, a.hunter, a.hub, a.workers)
     sys.exit(0 if final.get("status") in ("done", "verifying") else 1)
 
