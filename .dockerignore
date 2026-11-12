@@ -1,0 +1,10 @@
+data
+plots
+scripts
+tests
+.git
+**/__pycache__
+*.fits
+*.csv
+CLAUDE.local.md
+.env

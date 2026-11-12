@@ -1,0 +1,154 @@
+"""Offline tests: no network, no pixels. Run with `pytest`."""
+import json, os, time
+import numpy as np
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def tmp_data(tmp_path, monkeypatch):
+    from tesshunt_mcp import store
+    monkeypatch.setattr(store, "DATA", str(tmp_path))
+    store._hits.clear(); store._jobs.clear()
+    return tmp_path
+
+
+def V(**kw):
+    v = dict(odd_depth_ppm=10000, even_depth_ppm=10100, depth_err_ppm=500, secondary_depth_ppm=100,
+             secondary_any_phase_ppm=800, secondary_any_phase_at=0.4, n_transits=6)
+    v.update(kw); return v
+
+
+def test_candidate_bar_passes_clean_signal():
+    from tesshunt.sweep_core import candidate_bar
+    ok, fails = candidate_bar(15, 10000, 1.3, 3.9, 1.5, V())
+    assert ok and fails == []
+
+
+@pytest.mark.parametrize("kw,args,word", [
+    (dict(secondary_any_phase_ppm=9000, secondary_any_phase_at=0.54), (15, 38000, 2.4, 11.08, 2.5), "phase 0.54"),   # eccentric eclipsing binary
+    (dict(), (29, 8000, 6.0, 0.49, 1.0), "physical maximum"),                                                      # spotted rotator
+    (dict(odd_depth_ppm=10000, even_depth_ppm=4000), (15, 10000, 1.3, 3.9, 1.5), "odd/even"),
+    (dict(), (6.5, 10000, 1.3, 3.9, 1.5), "SNR"),
+    (dict(n_transits=1), (15, 10000, 1.3, 3.9, 1.5), "transit(s)"),
+    (dict(odd_depth_ppm=float("nan")), (15, 10000, 1.3, 3.9, 1.5), "odd/even"),
+])
+def test_candidate_bar_rejections(kw, args, word):
+    from tesshunt.sweep_core import candidate_bar
+    ok, fails = candidate_bar(*args, V(**kw))
+    assert not ok and any(word in f for f in fails), fails
+
+
+def test_clean_makes_json_safe():
+    from tesshunt_mcp import store
+    out = store.clean({"a": np.float64("nan"), "b": np.int64(3), "c": [np.float32(1.23456789), float("inf")], "d": np.bool_(True)})
+    assert out == {"a": None, "b": 3, "c": [pytest.approx(1.234568, rel=1e-6), None], "d": True}
+    json.dumps(out)
+
+
+def test_cache_roundtrip_and_key_stability():
+    from tesshunt_mcp import store
+    k1 = store.key("t", {"tic": 1, "p": 3.927167}); k2 = store.key("t", {"p": 3.927167, "tic": 1})
+    assert k1 == k2 and k1 != store.key("t", {"tic": 2, "p": 3.927167})
+    assert store.cache_get("t", k1) is None
+    store.cache_put("t", k1, {"x": 1}, b"png")
+    assert store.cache_get("t", k1) == ({"x": 1}, b"png")
+
+
+def test_rate_limit_window(monkeypatch):
+    from tesshunt_mcp import store
+    monkeypatch.setitem(store.LIMITS, "heavy", 2)
+    assert store.allow("s", "heavy", now=1000)[0] and store.allow("s", "heavy", now=1001)[0]
+    ok, wait = store.allow("s", "heavy", now=1002)
+    assert not ok and 3590 < wait <= 3600
+    assert store.allow("other", "heavy", now=1002)[0]          # per session
+    assert store.allow("s", "heavy", now=1000 + 3601)[0]       # window slides
+
+
+def test_session_id_is_anonymous_and_stable():
+    from tesshunt_mcp import store
+    a = store.session_id({"x-forwarded-for": "203.0.113.9, 10.0.0.1", "user-agent": "claude"})
+    assert a == store.session_id({"x-forwarded-for": "203.0.113.9", "user-agent": "claude"})
+    assert a != store.session_id({"x-forwarded-for": "203.0.113.10", "user-agent": "claude"})
+    assert "203" not in a and len(a) == 12
+
+
+def test_trace_has_no_address(tmp_data):
+    from tesshunt_mcp import store
+    store.trace("abc", "vet_signal", {"tic": 1}, {"verdict": "on_target"}, 1.2, False)
+    store.trace("abc", "vet_signal", {"tic": 1}, None, 0.1, False, error="boom")
+    lines = [json.loads(l) for l in open(next((tmp_data / "traces").iterdir()))]
+    assert lines[0]["result"] == {"verdict": "on_target"} and lines[1]["error"] == "boom"
+    assert set(lines[0]) == {"ts", "session", "tool", "args", "seconds", "cached", "consent", "result_sha1", "result"}
+
+
+def test_job_runs_once_and_reports_failure():
+    from tesshunt_mcp import store
+    calls = []
+    def fn(progress):
+        calls.append(1); progress("sector 1"); return {"status": "repeats"}, None
+    assert store.job_start("followup", "k" * 20, fn) == "queued"
+    for _ in range(50):
+        state, hit = store.job_get("followup", "k" * 20)
+        if hit: break
+        time.sleep(0.05)
+    assert hit[0] == {"status": "repeats"} and store.job_start("followup", "k" * 20, fn) == "done" and len(calls) == 1
+    store.job_start("followup", "f" * 20, lambda p: 1 / 0)
+    for _ in range(50):
+        state, hit = store.job_get("followup", "f" * 20)
+        if state["state"] == "failed": break
+        time.sleep(0.05)
+    assert state["state"] == "failed" and "ZeroDivisionError" in state["error"]
+    assert store.job_get("followup", "0" * 20)[0]["state"] == "unknown"
+
+
+def test_server_registers_tools_and_guide():
+    import anyio
+    from tesshunt_mcp import server
+    async def go():
+        return {t.name for t in await server.mcp.list_tools()}
+    names = anyio.run(go)
+    assert names == {"resolve_star", "catalog_check", "light_curve", "search_transits", "vet_signal", "neighbors", "fold_plot",
+                     "followup_start", "job_status", "report_verdict", "read_guide"}
+    g = server._guide()
+    assert "eccentric" in g and "TIC " not in g.replace("TESS Input Catalog", "")
+    assert "sweep" not in " ".join(names) and "mcmc" not in " ".join(names)
+
+
+def test_verdict_links_to_evidence(tmp_data):
+    from tesshunt_mcp import store
+    store._seen.clear()
+    store.trace("sid", "search_transits", {"tic": 7, "sector": 1}, {"tic": 7, "snr": 12.0}, 1.0, False)
+    store.trace("sid", "vet_signal", {"tic": 7, "sector": 1}, {"tic": 7, "verdict": "on_target"}, 1.0, False)
+    store.trace("sid", "vet_signal", {"tic": 8, "sector": 1}, {"tic": 8}, 1.0, False)
+    seen = store.seen("sid", 7)
+    assert [t for t, _ in seen] == ["search_transits", "vet_signal"] and all(len(h) == 16 for _, h in seen)
+    assert store.seen("other", 7) == []
+
+
+def _lc(depth, sec_depth=0.0, sec_phase=0.54, period=3.0, dur=0.1, n=6000, noise=0.002, red=0.0, seed=1):
+    import lightkurve as lk
+    rng = np.random.default_rng(seed)
+    t = np.linspace(0, 27, n); f = 1 + rng.normal(0, noise, n) + red * np.sin(2 * np.pi * t / 0.37)
+    ph = (t % period) / period
+    f[np.abs(((ph + 0.5) % 1) - 0.5) < dur / period / 2] -= depth
+    f[np.abs(((ph - sec_phase + 0.5) % 1) - 0.5) < dur / period / 2] -= sec_depth
+    return lk.LightCurve(time=t, flux=f)
+
+
+def test_secondary_found_when_real_even_off_half_phase():
+    from tesshunt import pipeline as P
+    v = P.vet(_lc(0.03, sec_depth=0.008), 3.0, 0.0, 0.1)
+    assert v["has_secondary"] and abs(v["secondary_any_phase_at"] - 0.54) < 0.02 and v["secondary_any_phase_sigma"] > 5
+
+
+def test_no_secondary_called_on_noise_or_red_noise():
+    from tesshunt import pipeline as P
+    for seed in range(8):
+        assert not P.vet(_lc(0.01, seed=seed), 3.0, 0.0, 0.1)["has_secondary"]
+        assert not P.vet(_lc(0.01, red=0.0015, noise=0.001, seed=seed), 3.0, 0.0, 0.1)["has_secondary"]
+
+
+def test_short_transit_allowed_exposure_smearing():
+    from tesshunt.sweep_core import candidate_bar
+    assert not candidate_bar(40, 1500, 0.75, 0.46, 0.5, V(depth_err_ppm=90), min_depth_ppm=0)[0]
+    assert candidate_bar(40, 1500, 0.75, 0.46, 0.5, V(depth_err_ppm=90, has_secondary=False), min_depth_ppm=0, cadence_h=0.5)[0]

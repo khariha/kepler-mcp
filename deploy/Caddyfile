@@ -1,0 +1,12 @@
+{$MCP_DOMAIN} {
+	encode gzip
+	request_body {
+		max_size 1MB
+	}
+	# Caddy replaces any client-sent X-Forwarded-For with the real peer address, which the rate limiter keys on.
+	reverse_proxy mcp:8000 {
+		transport http {
+			response_header_timeout 150s
+		}
+	}
+}

@@ -1,0 +1,28 @@
+# One box: the MCP server plus Caddy for HTTPS. Set MCP_DOMAIN and TESSHUNT_MCP_SALT in deploy/.env (not committed).
+services:
+  mcp:
+    build: ..
+    restart: unless-stopped
+    environment:
+      TESSHUNT_MCP_HOSTS: ${MCP_DOMAIN}
+      TESSHUNT_MCP_SALT: ${TESSHUNT_MCP_SALT}
+      TESSHUNT_MCP_LIGHT_PER_HOUR: "60"
+      TESSHUNT_MCP_HEAVY_PER_HOUR: "5"
+      TESSHUNT_MCP_CONCURRENCY: "4"
+      TESSHUNT_MCP_JOB_WORKERS: "2"
+    volumes:
+      - mcpdata:/app/data
+    mem_limit: 3g
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      MCP_DOMAIN: ${MCP_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+    depends_on: [mcp]
+volumes:
+  mcpdata:
+  caddydata:
