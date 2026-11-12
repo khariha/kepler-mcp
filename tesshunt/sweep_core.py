@@ -10,7 +10,8 @@ from tesshunt import pipeline as P
 
 COLS = ["ID", "Tmag", "Teff", "rad", "contratio", "camera", "ccd", "status", "n_cadences", "aperture_px",
         "noise_ppm", "period_d", "t0", "duration_h", "max_duration_h", "depth_ppm", "snr",
-        "odd_ppm", "even_ppm", "depth_err_ppm", "secondary_ppm", "n_transits", "planet_re", "candidate", "seconds"]
+        "odd_ppm", "even_ppm", "depth_err_ppm", "secondary_ppm", "n_transits", "planet_re", "candidate", "seconds",
+        "cadence_min", "secondary_any_ppm", "secondary_any_at", "has_secondary", "secondary_single_event"]
 
 def get_tpf(ra, dec, sector, size=15, source="s3"):
     """Fetch the pixel cube for one star.
@@ -71,7 +72,11 @@ def sweep_star(t, sector, cutout=15, source="s3", min_snr=9.0, min_depth_ppm=300
     png = None
     t_start = time.time()
     try:
-        tpf = get_tpf(t.ra, t.dec, sector, cutout, source)
+        ra, dec = t.ra, t.dec
+        if getattr(t, "pmRA", None) or getattr(t, "pmDEC", None):      # catalogue positions are epoch 2000
+            from tesshunt.star import position_at
+            ra, dec = position_at({"ra": t.ra, "dec": t.dec, "pmRA": t.pmRA, "pmDEC": t.pmDEC}, sector)
+        tpf = get_tpf(ra, dec, sector, cutout, source)
         if tpf is None:
             row["status"] = "no_cutout"; return row, None
         try:
@@ -84,6 +89,9 @@ def sweep_star(t, sector, cutout=15, source="s3", min_snr=9.0, min_depth_ppm=300
         lc = P.clean(lc)
         flat = P.flatten(lc, window_hours=33)
         flat = P.mask_jitter(flat, window_hours=6, factor=3)
+        fv = flat.flux.value; low = fv < 1 - 5 * np.nanstd(fv)       # isolated single-cadence glitches
+        flat = flat[~(low & ~np.roll(low, 1) & ~np.roll(low, -1))]
+        row["cadence_min"] = float(np.nanmedian(np.diff(tpf.time.value)) * 1440)
         row["n_cadences"] = len(flat)
         if len(flat) < 300:
             row["status"] = "too_few_cadences"; return row, None
@@ -97,9 +105,11 @@ def sweep_star(t, sector, cutout=15, source="s3", min_snr=9.0, min_depth_ppm=300
                    depth_ppm=r.depth * 1e6, snr=r.snr,
                    odd_ppm=v["odd_depth_ppm"], even_ppm=v["even_depth_ppm"], depth_err_ppm=v["depth_err_ppm"],
                    secondary_ppm=v["secondary_depth_ppm"], n_transits=v["n_transits"],
-                   planet_re=P.planet_radius_earths(max(r.depth, 0), t.rad))
+                   planet_re=P.planet_radius_earths(max(r.depth, 0), t.rad),
+                   secondary_any_ppm=v["secondary_any_phase_ppm"], secondary_any_at=v["secondary_any_phase_at"],
+                   has_secondary=v["has_secondary"], secondary_single_event=v["secondary_single_event"])
         is_cand, _ = candidate_bar(r.snr, r.depth * 1e6, r.duration * 24, r.period, row["max_duration_h"], v,
-                                   min_snr=min_snr, min_depth_ppm=min_depth_ppm)
+                                   min_snr=min_snr, min_depth_ppm=min_depth_ppm, cadence_h=row["cadence_min"] / 60)
         row["candidate"] = is_cand
         if is_cand and make_plot:
             import matplotlib

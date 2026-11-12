@@ -223,3 +223,20 @@ def test_hold_votes_do_not_count(tmp_data):
     lead = leads.claim_next(a)["lead_id"]
     leads.record(a, lead, "candidate", True, "dilution", "grazing", "candidate_like", [])
     assert leads.record(b, lead, "candidate", False, "recovery", "ok", "candidate_like", [])[0] == "open"
+
+
+def test_lead_filters_and_availability(tmp_data):
+    from tesshunt_mcp import leads
+    p = tmp_data / "f.jsonl"
+    rows = [{"tic": 1, "sector": 7, "period_d": 2.0, "t0": 1.0, "duration_h": 1.0, "depth_ppm": 10000, "snr": 20, "star": {"Teff": 3300, "rad": 0.4}},   # red, 4.4 Re
+            {"tic": 2, "sector": 7, "period_d": 3.0, "t0": 1.0, "duration_h": 2.0, "depth_ppm": 300, "snr": 15, "star": {"Teff": 5800, "rad": 1.0}},     # yellow, 1.9 Re
+            {"tic": 3, "sector": 7, "period_d": 4.0, "t0": 1.0, "duration_h": 1.0, "depth_ppm": 900, "snr": 12, "star": {"Teff": 3200, "rad": 0.3}}]     # red, 0.98 Re
+    p.write_text("\n".join(json.dumps(r) for r in rows)); leads.load(str(p))
+    h = leads.join("ann")["hunter_id"]
+    assert leads.available(h) == {"open_for_you": 3, "by_star_type": {"red": 2, "yellow": 1}, "by_size_if_planet": {"neptune": 1, "sub_neptune": 1, "rocky": 1}}
+    first = leads.claim_next(h)
+    assert first["tic"] == 1 and first["star_type"] == "red" and first["size_if_planet"] == "neptune"
+    y = leads.claim_next(h, want_star="yellow")                 # the held red lead is released for the one asked for
+    assert y["tic"] == 2 and y["resumed"] is False
+    assert leads.claim_next(h, want_size="rocky")["tic"] == 3
+    assert leads.claim_next(h, want_star="white") is None

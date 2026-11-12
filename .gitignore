@@ -8,3 +8,8 @@ __pycache__/
 .env
 deploy/.env
 .vscode/
+
+# operator data: never committed
+ops/data/
+ops/private_exclude.txt
+ops/leads.jsonl

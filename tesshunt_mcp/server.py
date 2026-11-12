@@ -25,7 +25,7 @@ _slots = None   # created inside the event loop
 
 INSTRUCTIONS = """Kepler: hunt for transiting planet CANDIDATES in NASA TESS data, with a guide at your side. (Named for Johannes Kepler; the data is from the TESS mission, not the Kepler space telescope.)
 
-First contact: when the user arrives, greets you, or says something like "let's start" or "let's hunt", call `welcome` and offer its two paths in your own words: Learn (find a known planet from raw data, explained step by step; call `lesson`) or Hunt (take a real unchecked lead, try to break it, get credited on the public board; call `join` then `next_lead`). If the user names a specific star instead, check that star with the `check_star` procedure.
+First contact: when the user arrives, greets you, or says something like "let's start" or "let's hunt", call `welcome` and offer its two paths in your own words: Learn (find a known planet from raw data, explained step by step; call `lesson`) or Hunt (take a real unchecked lead, try to break it, get credited on the public board; call `join` then `next_lead`, which can filter by star colour or planet size when the user has a preference). If the user names a specific star instead, check that star with the `check_star` procedure.
 
 Hand-holding: most results carry `next` (the sensible next step, with exact values to pass) and `plain` (what the result means in one sentence). Follow `next` unless the user asks for something else, and explain each step in plain words before showing numbers. Ask the user a question now and then; this is their hunt.
 
@@ -237,12 +237,25 @@ async def join(handle: str, ctx: Context) -> dict:
 
 
 @mcp.tool(title="Get a lead", annotations=NOTE)
-async def next_lead(hunter_id: str, ctx: Context) -> dict:
+async def next_lead(hunter_id: str, ctx: Context, star_type: str | None = None, planet_size: str | None = None) -> dict:
     """Take the next unchecked lead: a star where the bulk search saw a repeating dip. Returns the star, the signal, and the exact values to
-    pass to the tests. The lead is held for you for 30 minutes."""
-    lead = _lead_call(leads.claim_next, hunter_id)
+    pass to the tests. The lead is held for you for 30 minutes.
+    Optional filters, for a hunter who wants a particular kind: star_type = red, orange, yellow or white (yellow is Sun-like);
+    planet_size = rocky (under 1.8 Earth radii), sub_neptune, neptune or giant, judged from the dip's depth if it were a planet.
+    When nothing matches, the reply says what is available instead."""
+    if star_type and star_type not in leads.STAR_TYPES:
+        raise ToolError(f"star_type must be one of {', '.join(leads.STAR_TYPES)}")
+    if planet_size and planet_size not in leads.PLANET_SIZES:
+        raise ToolError(f"planet_size must be one of {', '.join(leads.PLANET_SIZES)}")
+    lead = _lead_call(leads.claim_next, hunter_id, None, star_type, planet_size)
     if lead is None:
-        return {"lead": None, "plain": "There are no open leads you have not already vetted. New ones are added as more of the sky is searched.",
+        avail = _lead_call(leads.available, hunter_id)
+        if avail["open_for_you"] and (star_type or planet_size):
+            return {"lead": None, "available": avail,
+                    "plain": "No open lead matches that filter. Here is what is in the queue for you; pick from these or drop the filter.",
+                    "next": "tell the user what kinds are available and call next_lead again with a filter that has leads, or with none"}
+        return {"lead": None, "available": avail,
+                "plain": "There are no open leads you have not already vetted. New ones are added as more of the sky is searched.",
                 "next": "show the user the board with board(), or check a star of their own choosing"}
     star = lead["star"]
     desc = []
@@ -253,10 +266,16 @@ async def next_lead(hunter_id: str, ctx: Context) -> dict:
     if star.get("d"):
         desc.append(f"{star['d'] * 3.26:.0f} light-years away")
     vals = f"period_d={lead['period_d']:.6f}, t0={lead['t0']:.5f}, duration_h={lead['duration_h']:.2f}"
+    if lead.get("star_type"):
+        desc.insert(0, f"a {lead['star_type']} star")
+    size = (f" If it is a planet it would be about {lead['radius_earth_if_planet']:.1f} times Earth's radius ({lead['size_if_planet'].replace('_', '-')})."
+            if lead.get("radius_earth_if_planet") else "")
     lead["brief"] = (f"Lead {lead['lead_id']}: TIC {lead['tic']}" + (f" ({', '.join(desc)})" if desc else "") +
-                     f". In sector {lead['sector']} the automatic search saw a dip of {lead['depth_ppm']/1e4:.2f}% every {lead['period_d']:.3f} days. "
-                     "Nobody has checked whether it is real. Your job is to try to break it.")
+                     f". In sector {lead['sector']} the automatic search saw a dip of {lead['depth_ppm']/1e4:.2f}% every {lead['period_d']:.3f} days.{size} " +
+                     ("PRACTICE LEAD: this queue holds well-known stars for testing the hunt, so expect a known planet or a known impostor. Tell the user so. "
+                      if leads.DEV else "Nobody has checked whether it is real. ") + "Your job is to try to break it.")
     lead["odds"] = "Most leads turn out to be eclipsing binaries, spotted stars or a neighbour's eclipse. Roughly 1 in 10 survives."
+    lead["available"] = _lead_call(leads.available, hunter_id)
     lead["next"] = (f"1) catalog_check(tic={lead['tic']})  2) vet_signal(tic={lead['tic']}, sector={lead['sector']}, {vals})  "
                     f"3) neighbors(tic={lead['tic']}, sector={lead['sector']}, depth_ppm={lead['depth_ppm']:.0f})  "
                     f"4) followup_start(tic={lead['tic']}, {vals}, depth_ppm={lead['depth_ppm']:.0f}) then job_status until done  "
@@ -345,7 +364,8 @@ def hunt() -> str:
     return """Let's hunt with Kepler. Guide me; assume I am new to this.
 
 1. Ask me for a hunter name and call join. Tell me to keep the hunter_id.
-2. Call next_lead. Read me the brief in your own words: which star, what the search saw, and that most leads are impostors.
+2. Call next_lead. If I asked for a kind of star or planet (a Sun-like star, a rocky planet), pass star_type or planet_size; if none matches, tell me what is
+   available. Read me the brief in your own words: which star, what the search saw, and that most leads are impostors.
 3. Work through the lead's `next` steps one at a time, with the exact values given. Before each test say in a sentence what impostor it is looking for;
    after it, say what the result means (`plain`) and show the two or three numbers that matter. Show me the plots.
 4. When the tests are done, tell me your verdict and why, ask whether I agree, then call submit_vet.

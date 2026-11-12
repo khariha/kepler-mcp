@@ -55,6 +55,9 @@ def load(path):
                             (int(d["tic"]), int(d["sector"]), round(float(d["period_d"]), 6), round(float(d["t0"]), 5), round(float(d["duration_h"]), 2),
                              round(float(d["depth_ppm"]), 0), float(d.get("snr") or 0), json.dumps(d.get("star") or {}), time.time()))
             n += cur.rowcount
+            if not cur.rowcount:      # already queued: refresh the star's parameters, keep its history
+                c.execute("update leads set star = ? where tic = ? and sector = ? and period_d = ?",
+                          (json.dumps(d.get("star") or {}), int(d["tic"]), int(d["sector"]), round(float(d["period_d"]), 6)))
     return n
 
 
@@ -83,31 +86,78 @@ def _handle(c, hunter_id):
     return row["handle"]
 
 
+STAR_TYPES = ("red", "orange", "yellow", "white")
+PLANET_SIZES = ("rocky", "sub_neptune", "neptune", "giant")
+
+
+def star_type(star):
+    """Colour class from temperature (or from radius when the catalogue has no temperature)."""
+    t, r = star.get("Teff"), star.get("rad")
+    if t:
+        return "red" if t < 3900 else "orange" if t < 5200 else "yellow" if t < 6000 else "white"
+    if r:
+        return "red" if r < 0.6 else "orange" if r < 0.85 else "yellow" if r < 1.2 else "white"
+    return None
+
+
+def planet_size(star, depth_ppm):
+    """Size class the dip would imply if it were a planet: radius = sqrt(depth) x star radius."""
+    r = star.get("rad")
+    if not r or not depth_ppm or depth_ppm <= 0:
+        return None, None
+    re = (depth_ppm / 1e6) ** 0.5 * r * 109.1
+    return ("rocky" if re < 1.8 else "sub_neptune" if re < 4 else "neptune" if re < 8 else "giant"), re
+
+
 def _lead_dict(r):
+    star = json.loads(r["star"] or "{}")
+    size, re = planet_size(star, r["depth_ppm"])
     return {"lead_id": r["id"], "tic": r["tic"], "sector": r["sector"], "period_d": r["period_d"], "t0": r["t0"],
-            "duration_h": r["duration_h"], "depth_ppm": r["depth_ppm"], "search_snr": r["snr"], "star": json.loads(r["star"] or "{}")}
+            "duration_h": r["duration_h"], "depth_ppm": r["depth_ppm"], "search_snr": r["snr"], "star": star,
+            "star_type": star_type(star), "size_if_planet": size, "radius_earth_if_planet": round(re, 2) if re else None}
 
 
 # ---------------- queue ----------------
-def claim_next(hunter_id, now=None):
-    """The open lead this hunter has not vetted, preferring one that already has a vet (so leads get finished)."""
+def _wanted(lead, want_star, want_size):
+    return (not want_star or lead["star_type"] == want_star) and (not want_size or lead["size_if_planet"] == want_size)
+
+
+def claim_next(hunter_id, now=None, want_star=None, want_size=None):
+    """The open lead this hunter has not vetted, preferring one that already has a vet (so leads get finished).
+    want_star / want_size narrow it to a star colour or an implied planet size. A held lead that does not fit is released."""
     now = now or time.time()
     with _lock, _db() as c:
         me = _handle(c, hunter_id)
         c.execute("delete from claims where expires < ?", (now,))
         mine = c.execute("select l.* from claims k join leads l on l.id = k.lead_id where k.hunter = ? and l.status = 'open'", (me,)).fetchone()
         if mine:
-            return _lead_dict(mine) | {"resumed": True}
-        row = c.execute("""
+            if _wanted(_lead_dict(mine), want_star, want_size):
+                return _lead_dict(mine) | {"resumed": True}
+            c.execute("delete from claims where hunter = ?", (me,))
+        rows = c.execute("""
             select l.*, (select count(*) from vets v where v.lead_id = l.id) nv,
                         (select count(*) from claims k where k.lead_id = l.id) nc
             from leads l where l.status = 'open'
               and not exists (select 1 from vets v where v.lead_id = l.id and v.hunter = ?)
-            order by (nv + nc >= 2), nv desc, nc asc, l.snr desc, l.id limit 1""", (me,)).fetchone()
-        if not row:
-            return None
-        c.execute("insert or replace into claims values (?,?,?)", (row["id"], me, now + CLAIM_SECONDS))
-        return _lead_dict(row) | {"resumed": False}
+            order by (nv + nc >= 2), nv desc, nc asc, l.snr desc, l.id""", (me,)).fetchall()
+        for row in rows:
+            if _wanted(_lead_dict(row), want_star, want_size):
+                c.execute("insert or replace into claims values (?,?,?)", (row["id"], me, now + CLAIM_SECONDS))
+                return _lead_dict(row) | {"resumed": False}
+        return None
+
+
+def available(hunter_id):
+    """Open leads this hunter has not vetted, counted by star colour and by implied planet size."""
+    with _lock, _db() as c:
+        me = _handle(c, hunter_id)
+        rows = c.execute("select * from leads l where l.status = 'open' and not exists (select 1 from vets v where v.lead_id = l.id and v.hunter = ?)", (me,)).fetchall()
+    by_star, by_size = {}, {}
+    for r in rows:
+        d = _lead_dict(r)
+        by_star[d["star_type"] or "unknown"] = by_star.get(d["star_type"] or "unknown", 0) + 1
+        by_size[d["size_if_planet"] or "unknown"] = by_size.get(d["size_if_planet"] or "unknown", 0) + 1
+    return {"open_for_you": len(rows), "by_star_type": by_star, "by_size_if_planet": by_size}
 
 
 def get(lead_id):
