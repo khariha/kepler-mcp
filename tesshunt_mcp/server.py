@@ -12,10 +12,14 @@ import anyio
 from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ToolAnnotations
 
 from tesshunt_mcp import core, store
 
 warnings.filterwarnings("ignore")
+# Every tool only reads public archives and computes; nothing is created, changed or sent on the caller's behalf.
+READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
+NOTE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 TIMEOUT = float(os.environ.get("TESSHUNT_MCP_TIMEOUT_S", 120))
 _slots = None   # created inside the event loop
 
@@ -78,7 +82,7 @@ def _content(result, png):
     return [result, Image(data=png, format="png")] if png else [result]
 
 
-@mcp.tool(title="Resolve a star")
+@mcp.tool(title="Resolve a star", annotations=READ)
 async def resolve_star(query: str, ctx: Context) -> list:
     """Find a star in the TESS Input Catalog. query: 'TIC 261136679', a bare TIC number, a name ('Pi Mensae', 'TOI-700', 'LHS 3844'), or 'ra dec' in degrees.
     Returns TIC id, coordinates, TESS magnitude, temperature, radius, mass, distance, contamination ratio, and the sectors that observed it."""
@@ -86,21 +90,21 @@ async def resolve_star(query: str, ctx: Context) -> list:
     return await _run("resolve_star_tool", "light", ctx, {"q": q.lower()}, lambda: core.resolve_star(q))
 
 
-@mcp.tool(title="Check catalogs")
+@mcp.tool(title="Check catalogs", annotations=READ)
 async def catalog_check(tic: int, ctx: Context) -> list:
     """Is this TIC already a confirmed planet host, a TESS Object of Interest (TOI), or a Community TOI? Do this before any search:
     a signal on a known planet host is a recovery, not a new candidate."""
     return await _run("catalog_check", "light", ctx, {"tic": tic}, lambda: core.catalog_check(tic))
 
 
-@mcp.tool(title="Light curve from full-frame images")
+@mcp.tool(title="Light curve from full-frame images", annotations=READ)
 async def light_curve(tic: int, sector: int, ctx: Context) -> list:
     """Build the star's brightness-vs-time curve for one sector from raw TESS full-frame-image pixels (first call per star and sector takes 5-50 s).
     Returns cadence, noise, a binned series and a plot. Use a sector from resolve_star."""
     return await _run("light_curve", "light", ctx, {"tic": tic, "sector": sector}, lambda: core.light_curve(tic, sector))
 
 
-@mcp.tool(title="Search for transits")
+@mcp.tool(title="Search for transits", annotations=READ)
 async def search_transits(tic: int, sector: int, ctx: Context, min_period_d: float = 0.3, max_period_d: float = 13.0,
                           min_snr: float = 9.0, min_depth_ppm: float = 0.0) -> list:
     """Box-least-squares search of one sector for a periodic dip. Returns the strongest signal (period, epoch t0, duration, depth, SNR),
@@ -111,7 +115,7 @@ async def search_transits(tic: int, sector: int, ctx: Context, min_period_d: flo
     return await _run("search_transits", "light", ctx, a, lambda: core.search_transits(tic, sector, min_period_d, max_period_d, min_snr, min_depth_ppm))
 
 
-@mcp.tool(title="Vet a signal")
+@mcp.tool(title="Vet a signal", annotations=READ)
 async def vet_signal(tic: int, sector: int, period_d: float, t0: float, duration_h: float, ctx: Context) -> list:
     """Try to break a signal in one sector: odd vs even depths, a secondary eclipse at ANY orbital phase (catches eccentric eclipsing binaries),
     duration against the physical maximum, centroid shift, difference image, and Gaia neighbours. Returns a verdict with reasons and a three-panel plot.
@@ -120,7 +124,7 @@ async def vet_signal(tic: int, sector: int, period_d: float, t0: float, duration
     return await _run("vet_signal", "light", ctx, a, lambda: core.vet_signal(tic, sector, period_d, t0, duration_h))
 
 
-@mcp.tool(title="Gaia neighbours")
+@mcp.tool(title="Gaia neighbours", annotations=READ)
 async def neighbors(tic: int, sector: int, ctx: Context, depth_ppm: float | None = None) -> list:
     """Gaia DR3 stars within 3 TESS pixels (63 arcsec) of the target, with separation and brightness relative to the target.
     Give depth_ppm to see how deep an eclipse on each neighbour would have to be to fake the dip."""
@@ -128,7 +132,7 @@ async def neighbors(tic: int, sector: int, ctx: Context, depth_ppm: float | None
     return await _run("neighbors", "light", ctx, a, lambda: core.neighbors(tic, sector, depth_ppm))
 
 
-@mcp.tool(title="Phase-folded plot")
+@mcp.tool(title="Phase-folded plot", annotations=READ)
 async def fold_plot(tic: int, sectors: list[int], period_d: float, t0: float, ctx: Context) -> list:
     """Fold up to 4 sectors at a period and epoch and overlay them. Useful to see whether the dip lines up across sectors."""
     a = {"tic": tic, "sectors": sorted(set(sectors))[:4], "period_d": period_d, "t0": t0}
@@ -139,10 +143,11 @@ def _followup_args(tic, period_d, t0, duration_h, depth_ppm):
     return {"tic": int(tic), "period_d": period_d, "t0": t0, "duration_h": duration_h, "depth_ppm": depth_ppm}
 
 
-@mcp.tool(title="Start multi-sector follow-up")
+@mcp.tool(title="Multi-sector follow-up (analysis only)", annotations=READ)
 async def followup_start(tic: int, period_d: float, t0: float, duration_h: float, depth_ppm: float, ctx: Context) -> dict:
-    """Start the decisive test: search every sector that observed the star, independently, for the same signal, then refine the period on the
-    stitched baseline. Takes 1-5 minutes; returns a job_id at once. Poll job_status(job_id) about every 20 s."""
+    """The decisive test, read-only: analyse every sector that observed the star for the same signal, then refine the period on the stitched
+    baseline. It only reads public data and computes; nothing is created or changed anywhere. The analysis takes 1-5 minutes, so this
+    returns a job_id at once; read the result with job_status(job_id) about every 20 s."""
     a = _followup_args(tic, period_d, t0, duration_h, depth_ppm)
     k = store.key("followup", a)
     sid = store.session_id(dict(ctx.headers) if ctx.headers else {})
@@ -156,7 +161,7 @@ async def followup_start(tic: int, period_d: float, t0: float, duration_h: float
     return out
 
 
-@mcp.tool(title="Follow-up job status")
+@mcp.tool(title="Follow-up job status", annotations=READ)
 async def job_status(job_id: str, ctx: Context) -> list:
     """State of a follow-up job: queued, running (with progress), failed, or done with the full result and stitched fold plot."""
     if not re.fullmatch(r"[0-9a-f]{20}", job_id):
@@ -174,7 +179,7 @@ VERDICTS = ("candidate", "eclipsing_binary", "blend_or_off_target", "systematics
 DECIDING = ("centroid", "secondary", "odd_even", "duration", "recovery", "catalog", "dilution", "snr", "other")
 
 
-@mcp.tool(title="Record a verdict")
+@mcp.tool(title="Record a verdict", annotations=NOTE)
 async def report_verdict(tic: int, verdict: str, reason: str, ctx: Context, hold: bool = False, deciding_test: str = "other") -> dict:
     """Optional: record the final call on a star after working through the procedure. verdict is one of
     candidate, eclipsing_binary, blend_or_off_target, systematics_or_noise, known_object, undecided. reason: one or two sentences citing the numbers.
@@ -202,7 +207,7 @@ def guide() -> str:
     return _guide()
 
 
-@mcp.tool(title="Read the vetting guide")
+@mcp.tool(title="Read the vetting guide", annotations=READ)
 async def read_guide(ctx: Context) -> str:
     """How transit signals fool you: common impostors, the test that catches each, how to read the numbers, and this server's limits.
     Background only: it does not replace running the tools on the star you were asked about."""
