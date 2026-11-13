@@ -3,7 +3,7 @@
 Shared by scripts/sweep.py (laptop, sequential) and scripts/modal_sweep.py
 (cloud, parallel). Keep all science here so both paths behave identically.
 """
-import io, time
+import io, os, time
 import numpy as np
 import lightkurve as lk
 from tesshunt import pipeline as P
@@ -12,6 +12,26 @@ COLS = ["ID", "Tmag", "Teff", "rad", "contratio", "camera", "ccd", "status", "n_
         "noise_ppm", "period_d", "t0", "duration_h", "max_duration_h", "depth_ppm", "snr",
         "odd_ppm", "even_ppm", "depth_err_ppm", "secondary_ppm", "n_transits", "planet_re", "candidate", "seconds",
         "cadence_min", "secondary_any_ppm", "secondary_any_at", "has_secondary", "secondary_single_event"]
+
+def _with_deadline(fn, seconds, what):
+    """Run fn in a daemon thread and give up after `seconds`. The archive read has no timeout of its own: one hung
+    S3 read held a star's lock for good, so nobody could vet that star again until a restart."""
+    import queue, threading
+    box = queue.Queue(maxsize=1)
+    def work():
+        try:
+            box.put((True, fn()))
+        except BaseException as e:
+            box.put((False, e))
+    threading.Thread(target=work, daemon=True, name="fetch").start()
+    try:
+        ok, val = box.get(timeout=seconds)
+    except queue.Empty:
+        raise TimeoutError(f"the TESS archive did not return {what} within {seconds:.0f} s; it is slow or unreachable, try again later") from None
+    if not ok:
+        raise val
+    return val
+
 
 def get_tpf(ra, dec, sector, size=15, source="s3"):
     """Fetch the pixel cube for one star.
@@ -22,7 +42,8 @@ def get_tpf(ra, dec, sector, size=15, source="s3"):
     """
     if source == "s3":
         from astrocut import TessFootprintCutout
-        c = TessFootprintCutout(f"{ra} {dec}", cutout_size=size, sequence=sector)
+        c = _with_deadline(lambda: TessFootprintCutout(f"{ra} {dec}", cutout_size=size, sequence=sector),
+                           float(os.environ.get("KEPLER_FETCH_TIMEOUT", 180)), f"pixels for Sector {sector}")
         if not c.tpf_cutouts:
             return None
         return lk.TessTargetPixelFile(c.tpf_cutouts[0])
@@ -89,8 +110,7 @@ def sweep_star(t, sector, cutout=15, source="s3", min_snr=9.0, min_depth_ppm=300
         lc = P.clean(lc)
         flat = P.flatten(lc, window_hours=33)
         flat = P.mask_jitter(flat, window_hours=6, factor=3)
-        fv = flat.flux.value; low = fv < 1 - 5 * np.nanstd(fv)       # isolated single-cadence glitches
-        flat = flat[~(low & ~np.roll(low, 1) & ~np.roll(low, -1))]
+        flat, _ = P.drop_isolated_glitches(flat)
         row["cadence_min"] = float(np.nanmedian(np.diff(tpf.time.value)) * 1440)
         row["n_cadences"] = len(flat)
         if len(flat) < 300:

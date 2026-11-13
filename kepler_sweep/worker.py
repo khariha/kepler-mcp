@@ -1,5 +1,6 @@
 """The per-star search, in its own importable module so worker processes can load it however the helper was started."""
-import warnings
+import os, socket, warnings
+socket.setdefaulttimeout(float(os.environ.get("KEPLER_NET_TIMEOUT", 60)))
 
 FIELDS = ("status", "period_d", "t0", "duration_h", "max_duration_h", "depth_ppm", "depth_err_ppm", "snr", "n_transits", "cadence_min", "noise_ppm")
 

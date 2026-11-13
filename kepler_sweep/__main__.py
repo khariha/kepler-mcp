@@ -7,6 +7,8 @@ It fetches the patch's star list from the hub, reads each star's pixels straight
 search, and uploads one row of numbers per star. Nothing else leaves this computer. An interrupted run picks up where it stopped.
 """
 import argparse, json, os, sys, time, urllib.error, urllib.request, warnings
+import socket
+socket.setdefaulttimeout(float(os.environ.get("KEPLER_NET_TIMEOUT", 60)))   # catalogue and archive calls have no timeout of their own
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 DEFAULT_HUB = os.environ.get("KEPLER_HUB", "http://127.0.0.1:8000")

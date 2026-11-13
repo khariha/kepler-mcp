@@ -174,8 +174,18 @@ def test_join_validates_and_keeps_names_unique(tmp_data):
     assert a["handle"] == "star_gazer" and len(a["hunter_id"]) == 12 and a["returning"] is False
     again = leads.join("Star_Gazer", "pass-word")                 # same handle (any case) and word: signed back in with the same id
     assert again["hunter_id"] == a["hunter_id"] and again["returning"] is True and again["handle"] == "star_gazer"
-    with pytest.raises(leads.LeadError, match=r"different recovery word.*available: star_gazer2, star_gazer3, star_gazer7"):
+    with pytest.raises(leads.LeadError, match=r"does not match.*case-sensitive") as e:
         leads.join("star_gazer", "wrong-word")
+    assert "available" not in str(e.value)                       # no handle suggestions: they helped enumerate handles
+    leads._wrong_words.clear()
+    for _ in range(leads.WRONG_WORD_LIMIT - 1):
+        with pytest.raises(leads.LeadError, match="does not match"):
+            leads.join("star_gazer", "guess-word")
+    with pytest.raises(leads.LeadError, match="does not match"):
+        leads.join("star_gazer", "guess-last")
+    with pytest.raises(leads.LeadError, match="too many wrong recovery words"):
+        leads.join("star_gazer", "pass-word")                   # throttled for the hour, even with the right word
+    leads._wrong_words.clear()
     with pytest.raises(leads.LeadError, match="recovery_word must be"):
         leads.join("newname", "abc")
     assert leads.join("other", "pass-word")["hunter_id"] != a["hunter_id"]      # the id depends on the handle too
@@ -472,18 +482,31 @@ def test_submit_vet_end_to_end_with_cached_evidence(tmp_data):
     from mcp.server.mcpserver.exceptions import ToolError
     from kepler_mcp import server, store
     leads = _leads(tmp_data, 2)
-    a, b = leads.join("ann", "pass-word")["hunter_id"], leads.join("bob", "pass-word")["hunter_id"]
+    a, b, a2 = (leads.join(h, "pass-word")["hunter_id"] for h in ("ann", "bob", "ann_two"))
     lead = leads.claim_next(a)
-    run = lambda **kw: anyio.run(lambda: server.submit_vet(ctx=None, **kw))
+
+    class Ctx:                      # two people on two connections
+        def __init__(self, ua): self.headers = {"user-agent": ua}
+    ann, bob = Ctx("ann-laptop"), Ctx("bob-laptop")
+    run = lambda ctx, **kw: anyio.run(lambda: server.submit_vet(ctx=ctx, **kw))
     with pytest.raises(ToolError, match="needs the evidence"):
-        run(hunter_id=a, lead_id=lead["lead_id"], verdict="candidate", reason="x")
+        run(ann, hunter_id=a, lead_id=lead["lead_id"], verdict="candidate", reason="x")
     sig = {"tic": lead["tic"], "sector": lead["sector"], "period_d": lead["period_d"], "t0": lead["t0"], "duration_h": lead["duration_h"]}
     store.cache_put("vet_signal", store.key("vet_signal", sig), {"verdict": "on_target"})
     fkey = store.key("followup", server._followup_args(lead["tic"], lead["period_d"], lead["t0"], lead["duration_h"], lead["depth_ppm"]))
     store.cache_put("followup", fkey, {"status": "repeats"})
-    r1 = run(hunter_id=a, lead_id=lead["lead_id"], verdict="candidate", reason="repeats in 3 of 3", deciding_test="recovery")
+    # someone else's cached evidence is not enough: this connection must have run the tests itself
+    with pytest.raises(ToolError, match="evidence from this session"):
+        run(ann, hunter_id=a, lead_id=lead["lead_id"], verdict="candidate", reason="x")
+    for c in (ann, bob):
+        for tool in ("vet_signal", "followup_start"):
+            store.note_seen(server._sid(c), tool, {"tic": lead["tic"]}, {"ok": 1})
+    r1 = run(ann, hunter_id=a, lead_id=lead["lead_id"], verdict="candidate", reason="repeats in 3 of 3", deciding_test="recovery")
     assert r1["lead_status"] == "open" and r1["disposition"] == "PC" and "second independent" in r1["summary"]
-    r2 = run(hunter_id=b, lead_id=lead["lead_id"], verdict="candidate", reason="agree", deciding_test="recovery")
+    # a second handle on the same connection does not make a second person
+    with pytest.raises(ToolError, match="two different people"):
+        run(ann, hunter_id=a2, lead_id=lead["lead_id"], verdict="candidate", reason="agree", deciding_test="recovery")
+    r2 = run(bob, hunter_id=b, lead_id=lead["lead_id"], verdict="candidate", reason="agree", deciding_test="recovery")
     assert r2["lead_status"] == "surviving" and "planet candidate" in r2["summary"]
     assert r1["display"].startswith("VERDICT") and "planet candidate (PC)" in r1["display"] and "awaiting another vetting" in r1["display"]
     blk = r2["display"].split("\n")
@@ -495,10 +518,18 @@ def test_submit_vet_end_to_end_with_cached_evidence(tmp_data):
     store.cache_put("followup", "k2", {"status": "does_not_repeat", "tic": other["tic"], "input": {"period_d": other["period_d"], "depth_ppm": other["depth_ppm"] + 26}})
     store.cache_put("followup", "k3", {"status": "repeats", "tic": other["tic"] + 1, "input": {"period_d": other["period_d"]}})        # another star: ignored
     assert server._same_signal(2.0, 4.0) and server._same_signal(4.0, 2.0) and not server._same_signal(2.0, 2.1)
-    r3 = run(hunter_id=a, lead_id=other["lead_id"], verdict="systematics_or_noise", reason="not recovered", deciding_test="recovery")
+    for tool in ("vet_signal", "followup_start"):
+        store.note_seen(server._sid(ann), tool, {"tic": other["tic"]}, {"ok": 1})
+    r3 = run(ann, hunter_id=a, lead_id=other["lead_id"], verdict="systematics_or_noise", reason="not recovered", deciding_test="recovery")
     assert r3["lead_status"] == "cleared" and r3["disposition"] == "FA" and "false alarm" in r3["summary"]
     r4 = anyio.run(lambda: server.report_verdict(tic=5, verdict="inconclusive", reason="n/a", ctx=None))
-    assert r4["recorded"] and r4["disposition"] is None
+    assert r4["recorded"] and r4["disposition"] is None and r4["display"].startswith("VERDICT")
+    # report_verdict: no candidate without this session's own tests, and none on a known planet host
+    with pytest.raises(ToolError, match="evidence from this session"):
+        anyio.run(lambda: server.report_verdict(tic=6, verdict="candidate", reason="looks good", ctx=bob))
+    store.cache_put("catalog_check", store.key("catalog_check", {"tic": 7}), {"known_planet_host": True, "is_toi": True})
+    with pytest.raises(ToolError, match="known_object"):
+        anyio.run(lambda: server.report_verdict(tic=7, verdict="candidate", reason="looks good", ctx=bob))
 
 
 def test_alias_guard_helpers():

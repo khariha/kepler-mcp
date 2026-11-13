@@ -8,6 +8,8 @@ Env: KEPLER_DATA (cache + traces dir), KEPLER_HOSTS (comma-separated allowed Hos
      KEPLER_TRACES=0 to turn the trace log off, KEPLER_SALT.
 """
 import argparse, os, re, sys, time, warnings
+import socket
+socket.setdefaulttimeout(float(os.environ.get("KEPLER_NET_TIMEOUT", 60)))   # catalogue and archive calls have no timeout of their own
 import anyio
 from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -30,7 +32,7 @@ except Exception:
 # Every tool only reads public archives and computes; nothing is created, changed or sent on the caller's behalf.
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 NOTE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
-TIMEOUT = float(os.environ.get("KEPLER_TIMEOUT_S", 120))
+TIMEOUT = float(os.environ.get("KEPLER_TIMEOUT_S", 85))     # under Cloudflare's 100 s limit on a silent request
 _slots = None   # created inside the event loop
 
 INSTRUCTIONS = """Kepler finds planets. It is the server for finding, hunting, searching for or looking for planets and exoplanets, and for checking
@@ -65,8 +67,8 @@ Conduct
 - Before a step that takes more than a few seconds, or that runs a command, state in one or two sentences what it does, what it reads and sends,
   and how long it takes. Then proceed in the same turn. Do not start silently, and do not stop to ask permission: the client's own permission
   prompt is the consent step.
-- A field search command is executed by the assistant, with its shell tool, in the background. Never ask the user to run, copy or paste it, and
-  do not print the raw command. Only when no shell tool exists in this client: say so in one line and give the command.
+- A field search command is executed by the assistant, with its shell tool, in the background. Show the command to the user in one line first,
+  then run it; never ask the user to run, copy or paste it. Only when no shell tool exists in this client: say so in one line and give the command.
 - While a long step runs, show its progress: results carry `display`, a short text block to print verbatim in a code block.
 - A field search or a follow-up is not finished when it starts. Stay in the same turn and keep calling patch_status (or job_status) until its status
   is done, printing each `display` as it arrives. Each call waits about 20 s for the next reading. Do not end the turn, and do not say that progress
@@ -117,7 +119,9 @@ async def _run(tool, cls, ctx, args, fn, cacheable=True):
             with anyio.fail_after(TIMEOUT):
                 result, png = await anyio.to_thread.run_sync(fn, abandon_on_cancel=True)
     except TimeoutError:
-        msg = f"{tool} exceeded {TIMEOUT:.0f} s (archive slow or star in many sectors); retry, the pixels are cached as they arrive"
+        msg = (f"{tool} is still working after {TIMEOUT:.0f} s, usually because the TESS archive is slow sending this star's pixels. "
+               "The download continues in the background: call the same tool again in about a minute and it returns quickly once they arrive. "
+               "After three such replies for one star, tell the user the archive is slow and offer another star or later.")
         store.trace(sid, tool, args, None, time.time() - t0, False, error=msg)
         raise ToolError(msg)
     except Exception as e:
@@ -239,14 +243,23 @@ async def job_status(job_id: str, ctx: Context, wait_s: float = 20.0) -> list:
             except Exception:
                 pass   # the client did not ask for progress, or the transport cannot stream it
         await anyio.sleep(1.0)
+    if hit is None and state.get("stalled_s"):
+        return [state | {"keep_polling": False, "summary": f"Follow-up stalled: no progress for {state['stalled_s'] // 60} min, usually a slow archive. "
+                         "Stop polling, tell the user, and start it again later (finished Sectors are cached).",
+                         "display": R.line("FOLLOW-UP", "stalled", f"no progress for {state['stalled_s'] // 60} min", "start again later")}]
     if hit is None:
         if state["state"] in ("queued", "running"):
             plan = (state.get("plan") or {}).get("plan")
             if plan:
                 state["display"] = core.followup_table(plan["tic"], plan["period_d"], plan["sectors"], state.get("rows") or [],
                                                        elapsed_s=state["elapsed_s"], running=True)
-            state = state | {"keep_polling": True, "summary": f"Follow-up {state['state']}: {len(state.get('rows') or [])} of {len(plan['sectors']) if plan else '?'} Sectors done.",
-                             "next_actions": [core.act("job_status", "REQUIRED now, in this same turn: the follow-up is still running", job_id=job_id)]}
+            ahead = state.get("jobs_ahead")
+            waiting = f" Waiting for {ahead} other job{'s' if ahead != 1 else ''} to finish first." if ahead else ""
+            state = state | {"keep_polling": True, "summary": f"Follow-up {state['state']}: {len(state.get('rows') or [])} of {len(plan['sectors']) if plan else '?'} Sectors done.{waiting}",
+                             "next_actions": [core.act("job_status", "still running: call again in this same turn", job_id=job_id)]}
+            if not plan:
+                state["display"] = R.line("FOLLOW-UP", "queued" if state["state"] == "queued" else "starting",
+                                          f"{ahead} job{'s' if ahead != 1 else ''} ahead" if ahead else None, R.clock(state["elapsed_s"]))
         return [state]
     result, png = hit
     store.trace(sid, "job_status", {"job_id": job_id}, result, 0, True)
@@ -260,15 +273,25 @@ DECIDING = ("centroid", "secondary", "odd_even", "duration", "recovery", "catalo
 @mcp.tool(title="Record a verdict", annotations=NOTE)
 async def report_verdict(tic: int, verdict: str, reason: str, ctx: Context, hold: bool = False, deciding_test: str = "other") -> dict:
     """Record a verdict on a star that is not from the leads queue. verdict: candidate, eclipsing_binary, blend_or_off_target,
-    systematics_or_noise, known_object, undecided. reason: the deciding numbers. hold: plausible but not ready to stand as a candidate.
+    systematics_or_noise, known_object, inconclusive, undecided. reason: the deciding numbers. hold: plausible but not ready to stand as a candidate.
+    A candidate verdict needs this session's own vet_signal and followup_start on the star, and is refused on a known planet host.
     deciding_test: centroid, secondary, odd_even, duration, recovery, catalog, dilution, snr, other. Logged anonymously; nothing is submitted anywhere."""
     if verdict not in VERDICTS:
         raise ToolError(f"verdict must be one of {', '.join(VERDICTS)}")
     if deciding_test not in DECIDING:
         raise ToolError(f"deciding_test must be one of {', '.join(DECIDING)}")
     sid = _sid(ctx)
+    if verdict == "candidate" and not hold:
+        cat = store.cache_get("catalog_check", store.key("catalog_check", {"tic": int(tic)}))
+        if cat is not None and (cat[0].get("known_planet_host") or cat[0].get("is_toi")):
+            raise ToolError("this star is already a known planet host or TOI: a signal here is a recovery. Record verdict known_object instead")
+        if not store.ran(sid, tic, "vet_signal", "followup_start"):
+            raise ToolError("a candidate verdict needs evidence from this session: run catalog_check, vet_signal and followup_start on this star "
+                            "(and job_status until done) first, or record hold=true or another verdict")
     code, wording = core.DISPOSITION[verdict]
     out = {"recorded": True, "tic": int(tic), "verdict": verdict, "disposition": code, "disposition_wording": wording, "hold": bool(hold)}
+    out["display"] = R.line("VERDICT", f"TIC {int(tic)}", f"recorded as {wording.split(':')[0]}" + (f" ({code})" if code else ""),
+                            "held" if hold else None, "logged only; nothing is submitted anywhere")
     store.trace(sid, "report_verdict", {"tic": int(tic), "verdict": verdict, "hold": bool(hold), "deciding_test": deciding_test,
                                         "reason": reason[:600], "tools_seen": store.seen(sid, tic)}, out, 0, False)
     return out
@@ -383,10 +406,11 @@ def _auto_status(lead):
 
 @mcp.tool(title="Submit a verdict on a lead", annotations=NOTE)
 async def submit_vet(hunter_id: str, lead_id: int, verdict: str, reason: str, ctx: Context, deciding_test: str = "other", hold: bool = False) -> dict:
-    """Record a verdict on a lead. verdict: candidate, eclipsing_binary, blend_or_off_target, systematics_or_noise, known_object, undecided.
+    """Record a verdict on a lead. verdict: candidate, eclipsing_binary, blend_or_off_target, systematics_or_noise, known_object, inconclusive, undecided.
     reason: the deciding numbers. deciding_test: centroid, secondary, odd_even, duration, recovery, catalog, dilution, snr, other. hold: plausible
-    but not ready. Refused until vet_signal and a finished follow-up exist for the lead's exact values. A lead reaches the board only with two
-    candidate verdicts from different handles and agreement from the server's own results."""
+    but not ready. Refused until this session has itself run vet_signal and followup_start on the lead (cached results return at once) and the
+    follow-up has finished. A lead reaches the board only with two candidate verdicts from different people (one connection counts once, whatever
+    its handles) and agreement from the server's own results."""
     if verdict not in VERDICTS:
         raise ToolError(f"verdict must be one of {', '.join(VERDICTS)}")
     if deciding_test not in DECIDING:
@@ -403,7 +427,12 @@ async def submit_vet(hunter_id: str, lead_id: int, verdict: str, reason: str, ct
             missing.append(f"followup_start(tic={lead['tic']}, {vals}, depth_ppm={lead['depth_ppm']:.0f}) and job_status until it says done")
         raise ToolError("a verdict needs the evidence behind it. Still to run, with these exact values: " + "; then ".join(missing))
     sid = _sid(ctx)
-    status, info = _lead_call(leads.record, hunter_id, lead_id, verdict, hold, deciding_test, reason, auto, store.seen(sid, lead["tic"]))
+    if not store.ran(sid, lead["tic"], "vet_signal", "followup_start"):
+        vals = f"period_d={lead['period_d']:.6f}, t0={lead['t0']:.5f}, duration_h={lead['duration_h']:.2f}"
+        raise ToolError("a verdict needs evidence from this session: run vet_signal(tic={0}, sector={1}, {2}) and followup_start(tic={0}, {2}, "
+                        "depth_ppm={3:.0f}) yourself (cached results return at once), then job_status until done".format(
+                            lead["tic"], lead["sector"], vals, lead["depth_ppm"]))
+    status, info = _lead_call(leads.record, hunter_id, lead_id, verdict, hold, deciding_test, reason, auto, store.seen(sid, lead["tic"]), session=sid)
     me = leads.stats(hunter_id); bd = leads.board(limit=1)
     if status == "surviving":
         summary = f"Signal {lead_id}: planet candidate. Two independent candidate verdicts and agreement from the server's results. Listed on the board."
@@ -420,7 +449,10 @@ async def submit_vet(hunter_id: str, lead_id: int, verdict: str, reason: str, ct
            "handle_tally": me, "board": {k: bd[k] for k in ("leads_total", "leads_open", "leads_cleared", "leads_surviving")},
            "next_actions": [core.act("next_lead", "next unvetted lead", hunter_id=hunter_id)]}
     state = {"surviving": "listed as a planet candidate", "cleared": "closed", "open": "open, awaiting another vetting"}[status]
-    out["display"] = R.line("VERDICT", f"signal {int(lead_id)} recorded as {wording.split(':')[0]}" + (f" ({code})" if code else ""), state, f"server reading: {auto}")
+    yours = f"your verdict {wording.split(':')[0]}" + (f" ({code})" if code else "")
+    if status == "cleared" and verdict == "candidate":
+        state = f"signal closed: the server's tests read it as {auto}, not a candidate"
+    out["display"] = R.line("VERDICT", f"signal {int(lead_id)}", yours, state, f"server reading: {auto}")
     if status == "surviving":
         full = leads.get(lead_id); who = [x for x in leads.board()["surviving"] if x["lead_id"] == int(lead_id)]
         rp = f"Rp = {full['radius_earth_if_planet']:.1f} R_Earth" if full.get("radius_earth_if_planet") else None
@@ -583,8 +615,8 @@ async def open_patch(hunter_id: str, ctx: Context, patch_id: str | None = None, 
                           "One row of numbers per star is uploaded; no files, credentials or personal data.",
                           "The hub re-runs every star the upload flags, and one unflagged star, before any signal is queued for vetting."],
             "duration": f"about {max(1, round(p['n_stars'] / 20))} minutes for {p['n_stars']} stars on a laptop",
-            "run_in": "Execute `command` now with the shell tool, in the background, in the same turn as this result. Do not ask the user to run it and do not "
-                      "print it. Then call patch_status repeatedly (each call waits for the next progress reading) and show its `display` block verbatim "
+            "run_in": "Show `command` to the user in one line, then execute it with the shell tool, in the background, in the same turn as this result. "
+                      "Do not ask the user to run it themselves. Then call patch_status repeatedly (each call waits for the next progress reading) and show its `display` block verbatim "
                       "in a code block each time, without ending the turn, until patch_status returns keep_polling false (about "
                       f"{max(4, round(p['n_stars'] / 20 * 3))} calls). Only if no shell tool exists: say so and give the command.",
             "next_actions": [core.act("patch_status", "result of the search, after the command finishes", patch_id=p["id"])]}

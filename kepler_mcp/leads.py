@@ -32,6 +32,8 @@ def _db():
     for col in ("found_by", "patch_id"):
         if col not in have:
             c.execute(f"alter table leads add column {col} text")
+    if "session" not in {r["name"] for r in c.execute("pragma table_info(vets)")}:
+        c.execute("alter table vets add column session text")
     return c
 
 
@@ -90,6 +92,10 @@ def _derive(handle, word):
     return base64.urlsafe_b64encode(digest)[:12].decode()
 
 
+WRONG_WORD_LIMIT = 5                 # wrong recovery words per handle per hour before join refuses for that handle
+_wrong_words = {}
+
+
 def join(handle, recovery_word):
     """Register a handle, or sign back in to one. Returns {"handle", "hunter_id", "returning"}."""
     handle = (handle or "").strip()
@@ -102,11 +108,15 @@ def join(handle, recovery_word):
     with _lock, _db() as c:
         row = c.execute("select id_hash, handle from hunters where handle = ?", (handle,)).fetchone()
         if row:
+            key = handle.lower(); now = time.time()
+            tries = [t for t in _wrong_words.get(key, []) if now - t < 3600]
+            if len(tries) >= WRONG_WORD_LIMIT:            # checked before the word, so a guess after the limit cannot succeed
+                raise LeadError(f"too many wrong recovery words for '{handle}' in the last hour; try again in about "
+                                f"{max(1, int((3600 - (now - tries[0])) // 60))} min")
             if row["id_hash"] != _hash(hunter_id):
-                free = [h for h in (f"{handle}{n}" for n in (2, 3, 7, 42, 99)) if len(h) <= 20
-                        and not c.execute("select 1 from hunters where handle = ?", (h,)).fetchone()][:3]
-                raise LeadError(f"handle '{handle}' is registered with a different recovery word; use that word, or choose another handle"
-                                + (f" (available: {', '.join(free)})" if free else ""))
+                _wrong_words[key] = tries + [now]
+                raise LeadError(f"that recovery word does not match the one registered for '{handle}' (recovery words are case-sensitive). "
+                                "If this is not your handle, choose a different one.")
             return {"handle": row["handle"], "hunter_id": hunter_id, "returning": True}
         c.execute("insert into hunters values (?,?,?)", (_hash(hunter_id), handle, time.time()))
     return {"handle": handle, "hunter_id": hunter_id, "returning": False}
@@ -213,7 +223,7 @@ def has_real():
         return c.execute("select 1 from leads where patch_id is not null limit 1").fetchone() is not None
 
 
-def record(hunter_id, lead_id, verdict, hold, deciding_test, reason, auto_status, tools_seen, now=None):
+def record(hunter_id, lead_id, verdict, hold, deciding_test, reason, auto_status, tools_seen, now=None, session=None):
     """Store one vet and settle the lead if it can be settled. Returns (lead status, summary dict)."""
     now = now or time.time()
     with _lock, _db() as c:
@@ -225,13 +235,18 @@ def record(hunter_id, lead_id, verdict, hold, deciding_test, reason, auto_status
             raise LeadError("this handle has already vetted this lead; call next_lead")
         if lead["status"] != "open":
             raise LeadError(f"lead {lead_id} is already settled ({lead['status']}); call next_lead")
-        c.execute("insert into vets values (?,?,?,?,?,?,?,?,?)",
-                  (lead["id"], me, verdict, int(bool(hold)), deciding_test, (reason or "")[:600], auto_status, json.dumps(tools_seen or []), now))
+        if verdict == "candidate" and session and c.execute(
+                "select 1 from vets where lead_id = ? and session = ? and verdict = 'candidate'", (lead["id"], session)).fetchone():
+            raise LeadError("a candidate verdict on this signal already came from this connection under another handle; "
+                            "two candidate verdicts must come from two different people")
+        c.execute("insert into vets (lead_id, hunter, verdict, hold, deciding_test, reason, auto_status, tools_seen, ts, session) values (?,?,?,?,?,?,?,?,?,?)",
+                  (lead["id"], me, verdict, int(bool(hold)), deciding_test, (reason or "")[:600], auto_status, json.dumps(tools_seen or []), now, session))
         c.execute("delete from claims where lead_id = ? and hunter = ?", (lead["id"], me))
         vets = c.execute("select * from vets where lead_id = ?", (lead["id"],)).fetchall()
         yes = [v for v in vets if v["verdict"] == "candidate" and not v["hold"]]
+        people = {v["session"] or v["hunter"] for v in yes}       # one connection counts once, whatever handles it uses
         server_yes = auto_status == "candidate_like"
-        if len(yes) >= 2 and server_yes:
+        if len(yes) >= 2 and len(people) >= 2 and server_yes:
             status = "surviving"
         elif not server_yes and verdict != "candidate":
             status = "cleared"          # hunter and server agree it is not a candidate: one vet is enough

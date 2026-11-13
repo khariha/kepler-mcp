@@ -27,11 +27,8 @@ def _build_flat(tpf, threshold):
     except Exception:
         lc, raw, aper = _central_aperture(tpf)
     flat = P.mask_jitter(P.flatten(P.clean(lc), window_hours=33), window_hours=6, factor=3)
-    # drop isolated single-cadence dips deeper than 5 sigma: a transit spans several cadences, a glitch spans one
-    f = flat.flux.value
-    low = f < 1 - 5 * np.nanstd(f)
-    isolated = low & ~np.roll(low, 1) & ~np.roll(low, -1)
-    return flat[~isolated], aper, int(isolated.sum())
+    flat, n_glitch = P.drop_isolated_glitches(flat)
+    return flat, aper, n_glitch
 MAX_FOLLOWUP_SECTORS = int(os.environ.get("KEPLER_MAX_SECTORS", 12))
 TIME_NOTE = "t0 is BTJD = BJD_TDB - 2457000; fields ending _bjd_tdb are BJD_TDB"
 CANDIDATE_NOTE = "a signal that passes is a planet candidate; validation or confirmation requires follow-up observations"
@@ -235,9 +232,28 @@ def resolve_star(query):
     s["summary"] = f"TIC {s['ID']}, {tm}. " + (f"Observed in {n} Sector(s), {s['sectors'][0]} to {s['sectors'][-1]}. Stellar parameters: TIC v8." if n else "Not observed by TESS.")
     s["next_actions"] = ([act("catalog_check", "known planets and existing candidates", tic=s["ID"]),
                           act("search_transits", "transit search, earliest sector", tic=s["ID"], sector=s["sectors"][0])] if n else [])
-    teff, rad = s.get("Teff"), s.get("rad")
-    kind = (None if not (teff or rad) else "red dwarf" if (teff and teff < 3900) or (not teff and rad < 0.6) else
+    teff, rad, tmag = s.get("Teff"), s.get("rad"), s.get("Tmag")
+    abs_t = (tmag - 5 * np.log10(d / 10)) if (tmag is not None and d and d > 0) else None
+    # Temperature alone cannot tell a dwarf from a giant (Betelgeuse came out "red dwarf"): use radius, or brightness for the distance.
+    giant = bool((rad and rad > 2.5) or (abs_t is not None and teff and teff < 5500 and abs_t < 3.0))
+    unsure = (not rad and abs_t is None and teff and teff < 5500 and tmag is not None and tmag < 6)
+    kind = ("giant star" if giant else "cool star, size unknown" if unsure else
+            None if not (teff or rad) else "red dwarf" if (teff and teff < 3900) or (not teff and rad < 0.6) else
             "orange dwarf" if (teff and teff < 5200) or (not teff and rad < 0.85) else "Sun-like star" if (teff and teff < 6000) or (not teff and rad < 1.2) else "hot star")
+    cav = []
+    if s.get("catalogue_note"):
+        cav.append(s["catalogue_note"])
+    if (s.get("matched_at_arcsec") or 0) > 5:
+        cav.append(f"the nearest catalogued star is {s['matched_at_arcsec']:.1f} arcsec from the position given; check it is the intended star")
+    if giant or unsure:
+        cav.append("a giant star: its size makes planet transits far too shallow to see, and it pulsates; a transit search here is not meaningful")
+    if tmag is not None and tmag < 6.5:
+        cav.append(f"very bright (Tmag {tmag:.1f}): saturated in TESS images, so depths are unreliable")
+    if s.get("matched_at_arcsec") is not None and tmag is not None and tmag > 16:
+        cav.append(f"Tmag {tmag:.1f} is too faint for full-frame-image photometry; a name that resolves to a star this faint may be a misspelling")
+    s["caveats"] = cav
+    if cav:
+        s["summary"] += " Note: " + "; ".join(cav) + "."
     secs = ", ".join(str(x) for x in s["sectors"][:12]) + (f", and {n - 12} more" if n > 12 else "")
     s["display"] = R.card(R.join(f"TIC {s['ID']}", kind, tm, f"{rad:.2f} R_Sun" if rad else None, f"{d:.0f} pc" if d else None),
                           f"observed in {n} Sector{'s' if n != 1 else ''}: {secs}" if n else "not observed by TESS")
@@ -325,14 +341,19 @@ def _density(s):
     return (s["mass"] / s["rad"] ** 3) if (s.get("rad") and s.get("mass")) else 1.0
 
 
+MIN_SNR_FLOOR = 7.0   # below this a BLS peak is noise on any star; the bar cannot be lowered past it
+
+
 def search_transits(tic, sector, min_period_d=0.3, max_period_d=13.0, min_snr=9.0, min_depth_ppm=0.0):
     t_call = time.time()
+    asked_snr = min_snr
+    min_snr = max(float(min_snr), MIN_SNR_FLOOR)
+    if not (0.2 <= min_period_d < max_period_d <= 30):
+        raise ValueError("min_period_d and max_period_d: need 0.2 <= min_period_d < max_period_d <= 30 days")
     s, tpf, flat, aper, cad = _flat(tic, sector)
     stages = _stage_list(tic, sector)
     t_search = time.time()
     baseline = float(flat.time.value.max() - flat.time.value.min())
-    if not (0.2 <= min_period_d < max_period_d <= 30):
-        raise ValueError("need 0.2 <= min_period_d < max_period_d <= 30 days")
     max_period_d = min(max_period_d, baseline)
     r = P.search(flat, min_period=min_period_d, max_period=max_period_d, n_periods=15000,
                  min_duration_hours=0.5, max_duration_hours=max(0.75, min(6.0, 0.5 * min_period_d * 24)), duration_step_hours=0.25)
@@ -361,11 +382,19 @@ def search_transits(tic, sector, min_period_d=0.3, max_period_d=13.0, min_snr=9.
            "bar": {"min_snr": min_snr, "min_depth_ppm": min_depth_ppm, "also": "at least 2 transits, duration within 1.5x the physical maximum, duty cycle under 15%, no secondary at any phase, odd and even depths agree"},
            "search": f"box least squares, periods {min_period_d:g}-{max_period_d:.3g} d, durations 0.5-6 h", "noise_ppm": float(np.nanstd(flat.flux.value)) * 1e6,
            "time_note": TIME_NOTE,
-           "caveats": _star_caveats(s) + ["one sector only: run follow-up before believing any signal",
+           "caveats": _star_caveats(s) + ([f"min_snr {asked_snr:g} was raised to {MIN_SNR_FLOOR:g}: below that a peak is noise"] if asked_snr < MIN_SNR_FLOOR else [])
+                       + ["one sector only: run follow-up before believing any signal",
                        "every light curve returns a best peak; below SNR 8 it is almost always noise or leftover systematics",
                        CANDIDATE_NOTE]}
     b = out["best"]
     b["t0_bjd_tdb"] = bjd(b["t0"])
+    if b["duration_h"] < 2 * cad / 60:
+        # A transit shorter than about two exposures is averaged down (LHS 3844 b, 31 min, reads ~40% deep at 30-min cadence).
+        out["caveats"].append(f"the {b['duration_h']:.1f} h dip spans under two {cad:.0f}-min exposures, so its depth is averaged down: "
+                              "depth and radius are lower limits; a Sector with shorter exposures measures it better")
+        b["depth_is_lower_limit"] = True
+    out["caveats"].append("depth is the box-search depth with no correction for light from neighbouring stars in the aperture; "
+                          "radius from it is approximate and can be low in crowded fields")
     head = f"Strongest BLS peak: P = {b['period_d']:.4f} d, depth {b['depth_ppm']:.0f} ppm, duration {b['duration_h']:.2f} h, S/N {b['snr']:.1f}, {b['n_transits']} transit(s). "
     transit_like = b["duration_h"] / 24 <= 0.25 * b["period_d"]
     if passes:
@@ -459,16 +488,32 @@ def neighbors(tic, sector, depth_ppm=None):
     return out, None
 
 
+def _check_signal_args(period_d, t0, duration_h):
+    """Reject impossible values before any pixels are downloaded. Each message names the argument."""
+    bad = []
+    if not (0.1 < period_d < 30):
+        bad.append(f"period_d {period_d:g} is outside 0.1-30 d")
+    if not (0.2 <= duration_h <= 12):
+        bad.append(f"duration_h {duration_h:g} is outside 0.2-12 h")
+    if not (0 < t0 < 10000):
+        bad.append(f"t0 {t0:g} is not a BTJD time (BJD_TDB - 2457000, about 1300-4500 for TESS); subtract 2457000 from a BJD")
+    if bad:
+        raise ValueError("; ".join(bad))
+    if duration_h / 24 > 0.25 * period_d:
+        raise ValueError(f"a {duration_h:g} h dip is {100*duration_h/24/period_d:.0f}% of a {period_d:.3f} d period: rotation or pulsation, not a transit; "
+                         "the transit tests do not apply above 25% of the period")
+
+
 def vet_signal(tic, sector, period_d, t0, duration_h):
     from tesshunt.vetting import verdict as _verdict
     t_call = time.time()
+    _check_signal_args(period_d, t0, duration_h)
     s, tpf, flat, aper, cad = _flat(tic, sector)
     dur = duration_h / 24
-    if not (0.1 < period_d < 30 and 0.2 <= duration_h <= 12):
-        raise ValueError("period must be 0.1-30 d and duration 0.2-12 h")
-    if dur > 0.25 * period_d:
-        raise ValueError(f"a {duration_h:g} h dip is {100*dur/period_d:.0f}% of a {period_d:.3f} d period: rotation or pulsation, not a transit; "
-                         "the transit tests do not apply above 25% of the period")
+    t_lo, t_hi = float(flat.time.value.min()), float(flat.time.value.max())
+    if not (t_lo - 500 * period_d < t0 < t_hi + 500 * period_d):
+        raise ValueError(f"t0 {t0:.5f} BTJD is {min(abs(t0 - t_lo), abs(t0 - t_hi)):.0f} d from Sector {sector} (BTJD {t_lo:.1f}-{t_hi:.1f}); "
+                         "a small period error grows over that many orbits. Use a t0 from this Sector or one near it (search_transits gives one)")
     v = P.vet(flat, period_d, t0, dur)
     t, f = flat.time.value, flat.flux.value
     in_tr = np.abs(((t - t0 + period_d / 2) % period_d) - period_d / 2) < dur / 2
@@ -483,7 +528,15 @@ def vet_signal(tic, sector, period_d, t0, duration_h):
     verdict, reasons, exp_shift = _verdict(row, c, g)
     any_sec, any_ph = v["secondary_any_phase_ppm"], v["secondary_any_phase_at"]
     any_sig = v["secondary_any_phase_sigma"]
-    if v["has_secondary"]:
+    primary_sig = depth_ppm / err if (np.isfinite(err) and err > 0) else float("nan")
+    if not (primary_sig >= 3):
+        # Verdict becomes not_significant below. Without a dip at the given epoch there is nothing to judge: a deeper "secondary" elsewhere is usually the real
+        # transit at the wrong epoch or period (a wrong epoch made pi Men c read as an 18-sigma eclipsing binary).
+        msg = (f"no dip at this period and epoch: {depth_ppm:.0f} +/- {err:.0f} ppm ({primary_sig:.1f} sigma). "
+               f"The deepest box elsewhere in phase is {any_sec:.0f} ppm at phase {any_ph:.2f}; if that is the signal, the epoch is off by "
+               f"{any_ph * period_d:.3f} d. Re-run with t0 = {t0 + any_ph * period_d:.5f}, or take t0 from search_transits.")
+        reasons.insert(0, msg)
+    if v["has_secondary"] and primary_sig >= 3:
         verdict = "eclipsing_binary"
         reasons.insert(0, f"secondary eclipse {any_sec:.0f} ppm at phase {any_ph:.2f} ({any_sec/err:.1f} sigma formal, {any_sig:.1f} sigma against the other phases): eclipsing binary, eccentric if away from 0.5")
     else:

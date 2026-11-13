@@ -90,21 +90,38 @@ def search(flat, min_period=0.5, max_period=None, n_periods=20000,
     baseline = flat.time.max().value - flat.time.min().value
     if max_period is None:
         max_period = baseline / 2.0
-    periods = np.linspace(min_period, max_period, n_periods)
+    # Uniform in frequency, not in period: the phase error a grid step causes over the baseline scales as
+    # baseline * dP / P^2, so a linear grid is far too coarse at short periods (LHS 3844 b folded 30 min off).
+    freqs = np.linspace(1.0 / max_period, 1.0 / min_period, n_periods)
+    periods = np.sort(1.0 / freqs)
     durations = np.arange(min_duration_hours, max_duration_hours + 1e-9, duration_step_hours) / 24.0
     pg = flat.to_periodogram(method="bls", period=periods, duration=durations)
     power = pg.power.value
     med = np.nanmedian(power)
     mad = np.nanmedian(np.abs(power - med)) * 1.4826
-    depth = pg.depth_at_max_power
+    snr = float((np.nanmax(power) - med) / mad) if mad > 0 else float("nan")
+    # Refine around the best peak: a fine period grid spanning one coarse step either side, and a fine duration grid.
+    p0 = float(pg.period_at_max_power.value)
+    step = p0 * p0 * (freqs[1] - freqs[0]) if len(freqs) > 1 else p0 * 1e-3
+    fine_p = np.linspace(max(min_period, p0 - 2 * step), min(max_period, p0 + 2 * step), 400)
+    d0 = float(pg.duration_at_max_power.value) * 24
+    fine_d = np.arange(max(0.25, d0 - duration_step_hours), d0 + duration_step_hours + 1e-9, 0.05) / 24.0
+    fine_d = fine_d[fine_d < 0.5 * fine_p.min()]
+    best = pg
+    if len(fine_d):
+        try:
+            best = flat.to_periodogram(method="bls", period=fine_p, duration=fine_d)
+        except Exception:
+            best = pg
+    depth = best.depth_at_max_power
     depth = float(depth.value) if hasattr(depth, "value") else float(depth)
     return SearchResult(
-        period=float(pg.period_at_max_power.value),
-        t0=float(pg.transit_time_at_max_power.value),
-        duration=float(pg.duration_at_max_power.value),
+        period=float(best.period_at_max_power.value),
+        t0=float(best.transit_time_at_max_power.value),
+        duration=float(best.duration_at_max_power.value),
         depth=depth,
         power=float(pg.max_power.value) if hasattr(pg.max_power, "value") else float(pg.max_power),
-        snr=float((np.nanmax(power) - med) / mad) if mad > 0 else float("nan"),
+        snr=snr,
         periodogram=pg,
     )
 
@@ -204,6 +221,38 @@ def max_duration_hours(period_days, star_density_suns=1.0):
 
 # ---------- FFI pixels -> light curve ----------
 
+def background_pixels(aper, clear_px=2, min_pixels=30):
+    """Pixels used to model the background: everything at least `clear_px` pixels from the aperture.
+
+    The star's light spills past the aperture edge, and that spill dims during a transit too. If those pixels
+    are used as regressors, the background fit learns the transit and subtracts it: WASP-121 b (1.5% deep)
+    came out at 943 ppm with every non-aperture pixel, and 12,331 ppm with a 2-pixel clearance.
+    The clearance shrinks only if too few pixels would remain.
+    """
+    from scipy.ndimage import binary_dilation
+    for grow in range(clear_px, 0, -1):
+        mask = ~binary_dilation(aper, iterations=grow)
+        if mask.sum() >= min_pixels:
+            return mask
+    return ~aper
+
+
+def drop_isolated_glitches(flat, nsigma=5.0, max_glitches=2):
+    """Drop single low cadences that look like glitches (cosmic-ray hits on the background, bad frames).
+
+    A transit shorter than one cadence also produces isolated low points, one per orbit, so this only acts when
+    there are at most `max_glitches` of them: three or more isolated dips in one Sector are far more likely a
+    periodic short transit than a run of glitches (LP 791-18 c lost 2 of its 4 in-transit cadences to the old rule).
+    Returns (light curve, number dropped).
+    """
+    f = flat.flux.value
+    low = f < 1 - nsigma * np.nanstd(f)
+    isolated = low & ~np.roll(low, 1) & ~np.roll(low, -1)
+    if isolated.sum() == 0 or isolated.sum() > max_glitches:
+        return flat, 0
+    return flat[~isolated], int(isolated.sum())
+
+
 def lightcurve_from_cutout(tpf, threshold=10, n_pca=5):
     """Build a light curve from a TESScut pixel cube.
 
@@ -216,7 +265,7 @@ def lightcurve_from_cutout(tpf, threshold=10, n_pca=5):
     """
     aper = tpf.create_threshold_mask(threshold=threshold, reference_pixel="center")
     raw = tpf.to_lightcurve(aperture_mask=aper)
-    regressors = tpf.flux[:, ~aper]
+    regressors = tpf.flux[:, background_pixels(aper)]
     regressors = regressors.value if hasattr(regressors, "value") else regressors
     # drop cadences where either the aperture sum or any background pixel is non-finite,
     # from BOTH the light curve and the regressors, so the design matrix rows line up

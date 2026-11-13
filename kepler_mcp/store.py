@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.environ.get("KEPLER_DATA", os.path.join(ROOT, "data", "mcp"))
-VERSION = "6"   # bump to invalidate cached results when the science changes
+VERSION = "7"   # bump to invalidate cached results when the science changes
 
 
 def clean(o, sig=12):
@@ -88,12 +88,30 @@ def seen(sid, tic):
 def session_id(headers):
     """Anonymous, non-reversible, rotates daily. The address itself is never written anywhere."""
     h = headers or {}
-    ip = (h.get("x-forwarded-for") or h.get("x-real-ip") or "local").split(",")[0].strip()
+    # Behind Cloudflare the visitor's address is CF-Connecting-IP (set by Cloudflare; the origin firewall must accept only Cloudflare so it
+    # cannot be forged). Then the reverse proxy's X-Real-IP / X-Forwarded-For. Direct local runs fall back to one shared value.
+    ip = (h.get("cf-connecting-ip") or h.get("x-real-ip") or h.get("x-forwarded-for") or "local").split(",")[0].strip()
     salt = os.environ.get("KEPLER_SALT", "kepler") + time.strftime("%Y-%m-%d", time.gmtime())
     return hashlib.sha256((salt + ip + h.get("user-agent", "")).encode()).hexdigest()[:12]
 
 
+def note_seen(sid, tool, args, result):
+    """Remember that this session ran `tool` on this star. Kept even when traces are off: verdicts are gated on it."""
+    tic = (args or {}).get("tic") or (result.get("tic") if isinstance(result, dict) else None)
+    if tic is not None and tool != "report_verdict":
+        body = json.dumps(result, sort_keys=True, default=str)
+        _seen[(sid, int(tic))].append((tool, hashlib.sha1(body.encode()).hexdigest()[:16]))
+
+
+def ran(sid, tic, *tools):
+    """True when this session itself ran every one of `tools` on this star."""
+    have = {t for t, _ in _seen.get((sid, int(tic)), [])}
+    return all(t in have for t in tools)
+
+
 def trace(sid, tool, args, result, seconds, cached, error=None):
+    if not error:
+        note_seen(sid, tool, args, result)
     if os.environ.get("KEPLER_TRACES", "1") == "0":
         return
     d = os.path.join(DATA, "traces")
@@ -106,9 +124,6 @@ def trace(sid, tool, args, result, seconds, cached, error=None):
         body = json.dumps(result, sort_keys=True)
         rec["result_sha1"] = hashlib.sha1(body.encode()).hexdigest()[:16]
         rec["result"] = result if len(body) <= 6000 else {"truncated": True, "keys": sorted(result)[:40]}
-        tic = (args or {}).get("tic") or (result.get("tic") if isinstance(result, dict) else None)
-        if tic is not None and tool != "report_verdict":
-            _seen[(sid, int(tic))].append((tool, rec["result_sha1"]))
     with _trace_lock, open(os.path.join(d, time.strftime("%Y-%m-%d", time.gmtime()) + ".jsonl"), "a") as f:
         f.write(json.dumps(rec) + "\n")
 
@@ -134,7 +149,8 @@ def allow(sid, cls, now=None):
 
 
 # ---------------- jobs ----------------
-_pool = ThreadPoolExecutor(max_workers=int(os.environ.get("KEPLER_JOB_WORKERS", 2)), thread_name_prefix="job")
+_pool = ThreadPoolExecutor(max_workers=int(os.environ.get("KEPLER_JOB_WORKERS", 3)), thread_name_prefix="job")
+STALL_S = float(os.environ.get("KEPLER_JOB_STALL_S", 600))     # a running job with no new progress for this long is reported as stalled
 _jobs = {}
 _job_lock = threading.Lock()
 
@@ -147,12 +163,14 @@ def job_start(tool, k, fn):
         j = _jobs.get(k)
         if j and j["state"] in ("queued", "running"):
             return j["state"]
-        _jobs[k] = j = {"state": "queued", "tool": tool, "started": time.time(), "error": None, "progress": "", "steps": 0, "plan": None, "rows": []}
+        _jobs[k] = j = {"state": "queued", "tool": tool, "started": time.time(), "changed": time.time(), "error": None, "progress": "", "steps": 0,
+                        "plan": None, "rows": []}
 
     def work():
-        j["state"] = "running"
+        j["state"] = "running"; j["changed"] = time.time()
         try:
             def note(m):
+                j["changed"] = time.time()
                 if isinstance(m, dict):                      # structured progress: a plan, or one finished row
                     if "plan" in m:
                         j["plan"] = m
@@ -177,8 +195,14 @@ def job_get(tool, k):
     j = _jobs.get(k)
     if not j:
         return {"state": "unknown"}, None
-    out = {"state": j["state"], "elapsed_s": round(time.time() - j["started"]), "progress": j["progress"], "steps_done": j["steps"],
+    now = time.time()
+    out = {"state": j["state"], "elapsed_s": round(now - j["started"]), "progress": j["progress"], "steps_done": j["steps"],
            "plan": j.get("plan"), "rows": list(j.get("rows") or [])}
+    if j["state"] == "queued":
+        out["jobs_ahead"] = sum(1 for x in list(_jobs.values()) if x["state"] == "running") + \
+            sum(1 for x in list(_jobs.values()) if x["state"] == "queued" and x["started"] < j["started"])
+    if j["state"] == "running" and now - j.get("changed", j["started"]) > STALL_S:
+        out["stalled_s"] = round(now - j.get("changed", j["started"]))
     if j["error"]:
         out["error"] = j["error"]
     return out, None

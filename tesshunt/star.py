@@ -54,11 +54,28 @@ def resolve(query):
             t.sort("dstArcSec")
     if len(t) == 0:
         raise LookupError(f"no TIC entry found for {query!r}")
+    # TIC keeps some stars twice: a row marked DUPLICATE/SPLIT/ARTIFACT points to the real one (duplicate_id).
+    # Proxima Centauri resolved to its DUPLICATE row, and the planet catalogue knows only the main row.
+    note = None
+    bad = {"DUPLICATE", "SPLIT", "ARTIFACT", "PHANTOM"}
+    disp = lambda row: str(row["disposition"]).strip().upper() if "disposition" in row.colnames else ""
+    if disp(t[0]) in bad:
+        main = str(t[0]["duplicate_id"]).strip() if "duplicate_id" in t.colnames else ""
+        if main.isdigit():
+            note = f"TIC {int(t[0]['ID'])} is a {disp(t[0]).lower()} catalogue entry; using the main entry TIC {main}"
+            t = Catalogs.query_criteria(catalog="Tic", ID=int(main))
+        elif not m:
+            keep = [i for i in range(len(t)) if disp(t[i]) not in bad]
+            if keep:
+                note = f"skipped a {disp(t[0]).lower()} catalogue entry at this position"
+                t = t[keep]
     c = t[0]
     out = {k: _num(c[k]) for k in FIELDS}
     out["ID"] = int(c["ID"])
-    if not m:
+    if not m and "dstArcSec" in c.colnames:
         out["matched_at_arcsec"] = _num(c["dstArcSec"])
+    if note:
+        out["catalogue_note"] = note
     _fill_mdwarf(out)
     from tesshunt.followup import observed_sectors
     out["sectors"] = observed_sectors(out["ID"], out["ra"], out["dec"])
