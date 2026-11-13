@@ -427,3 +427,68 @@ def test_live_progress_display(tmp_data):
     sky.set_progress(a, pid, 2, 3, 0, stars=["TIC 1000  T 13.0  rms 0.21%  nominal"], now=1060)
     assert "nominal" in sky.progress(pid, now=1060)["display"]
     assert sky.progress(pid, now=1060 + 601) is None                   # stale readings are not shown
+
+
+# ---------------- readbacks ----------------
+def _narrow(text):
+    assert all(len(l) <= 66 for l in text.split("\n")), [l for l in text.split("\n") if len(l) > 66]
+    return text
+
+
+def test_readout_forms_fit_and_align():
+    from kepler_mcp import readout as R
+    assert R.num(3192.4) == "3,192" and R.num(None) == "--" and R.num(0.4567, 2) == "0.46"
+    assert R.join("a", None, "", "b") == "a · b"
+    assert R.line("CATALOGUE", "not a known planet host, TOI or CTOI") == "CATALOGUE   not a known planet host, TOI or CTOI"
+    assert len(R.fit("x" * 200)) == 66 and R.fit("x" * 200).endswith("…")
+    c = _narrow(R.checklist("TRANSIT SEARCH · TIC 61994665 · Sector 7",
+                            [("pixels", "15x15 cutout, 1,093 cadences (cached)", 0.2), ("curve", "aperture 6 px, rms 2,410 ppm", 3.1),
+                             ("search", "15,000 periods over 0.3-13 d", 5.8)],
+                            ["P = 5.0645 d · depth 3,192 ppm · S/N 12.4 · 5 transits", "transit-like: passes the detection criteria"], total_s=9.4))
+    rows = c.split("\n")
+    assert rows[0].endswith("9.4 s") and rows[1].endswith("0.2 s") and rows[3].endswith("5.8 s") and len(rows[0]) == len(rows[1]) == 66
+    assert rows[4].startswith("RESULT   P = 5.0645 d") and rows[5].startswith("         transit-like")
+    t = _narrow(R.test_table("VETTING · TIC 1 · Sector 7", [("significance", "3,218 +/- 240 ppm (13.4 sigma)", "pass"),
+                                                             ("difference image", "too weak to localize (3 sigma)", "--"),
+                                                             ("secondary 0.15-0.85", "9,000 ppm at phase 0.54 (12 sigma)", "FAIL")], "eclipsing_binary", 6.1))
+    tr = t.split("\n")
+    assert tr[1].split() == ["TEST", "MEASURED", "RESULT"] and tr[2].rstrip().endswith("pass") and tr[4].rstrip().endswith("FAIL") and tr[-1] == "VERDICT  eclipsing_binary"
+    assert tr[2].index("3,218") == tr[3].index("too weak") == tr[1].index("MEASURED")           # the measured column lines up
+    tb = _narrow(R.table("FOLLOW-UP", [("SECTOR", "r"), ("CADENCE", "l"), ("DEPTH (ppm)", "r"), ("SIGMA", "r"), ("AT EPHEMERIS", "l")],
+                         [[7, "30 min", "3,192", "13.4", "agrees"], [87, "200 s", "running..."], [111, "--", "no public data"]], footer=["STATUS    repeats"]))
+    assert "running..." in tb and tb.split("\n")[-1] == "STATUS    repeats"
+    assert R.bar(0, 4) == "▕" + "░" * 24 + "▏" and R.bar(4, 4).count("█") == 24 and R.bar(9, 4).count("█") == 24 and R.bar(1, 0).count("█") == 0
+    b = _narrow(R.block("PLANET CANDIDATE LISTED · TIC 61994665", "P = 5.064498 d", None))
+    assert b.split("\n")[0] == "=" * 66 and b.split("\n")[1].startswith(" PLANET CANDIDATE LISTED") and len(b.split("\n")) == 4
+    assert R.clock(72) == "T+01:12" and R.secs(9.44) == "9.4 s" and R.secs(None) == ""
+    assert R.not_done("TESS archive did not respond", "retry in a minute").startswith("NOT DONE")
+
+
+def test_submit_vet_end_to_end_with_cached_evidence(tmp_data):
+    """The whole tool, not just the store: a refusal without evidence, then a recorded verdict in every outcome branch."""
+    import anyio
+    from mcp.server.mcpserver.exceptions import ToolError
+    from kepler_mcp import server, store
+    leads = _leads(tmp_data, 2)
+    a, b = leads.join("ann", "pass-word")["hunter_id"], leads.join("bob", "pass-word")["hunter_id"]
+    lead = leads.claim_next(a)
+    run = lambda **kw: anyio.run(lambda: server.submit_vet(ctx=None, **kw))
+    with pytest.raises(ToolError, match="needs the evidence"):
+        run(hunter_id=a, lead_id=lead["lead_id"], verdict="candidate", reason="x")
+    sig = {"tic": lead["tic"], "sector": lead["sector"], "period_d": lead["period_d"], "t0": lead["t0"], "duration_h": lead["duration_h"]}
+    store.cache_put("vet_signal", store.key("vet_signal", sig), {"verdict": "on_target"})
+    fkey = store.key("followup", server._followup_args(lead["tic"], lead["period_d"], lead["t0"], lead["duration_h"], lead["depth_ppm"]))
+    store.cache_put("followup", fkey, {"status": "repeats"})
+    r1 = run(hunter_id=a, lead_id=lead["lead_id"], verdict="candidate", reason="repeats in 3 of 3", deciding_test="recovery")
+    assert r1["lead_status"] == "open" and r1["disposition"] == "PC" and "second independent" in r1["summary"]
+    r2 = run(hunter_id=b, lead_id=lead["lead_id"], verdict="candidate", reason="agree", deciding_test="recovery")
+    assert r2["lead_status"] == "surviving" and "planet candidate" in r2["summary"]
+    other = leads.claim_next(a)
+    sig2 = {"tic": other["tic"], "sector": other["sector"], "period_d": other["period_d"], "t0": other["t0"], "duration_h": other["duration_h"]}
+    store.cache_put("vet_signal", store.key("vet_signal", sig2), {"verdict": "likely_on_target"})
+    store.cache_put("followup", store.key("followup", server._followup_args(other["tic"], other["period_d"], other["t0"], other["duration_h"], other["depth_ppm"])),
+                    {"status": "does_not_repeat"})
+    r3 = run(hunter_id=a, lead_id=other["lead_id"], verdict="systematics_or_noise", reason="not recovered", deciding_test="recovery")
+    assert r3["lead_status"] == "cleared" and r3["disposition"] == "FA" and "false alarm" in r3["summary"]
+    r4 = anyio.run(lambda: server.report_verdict(tic=5, verdict="inconclusive", reason="n/a", ctx=None))
+    assert r4["recorded"] and r4["disposition"] is None

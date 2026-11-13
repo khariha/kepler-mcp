@@ -17,6 +17,9 @@ from mcp.types import ToolAnnotations
 from kepler_mcp import core, leads, sky, store
 
 warnings.filterwarnings("ignore")
+import logging
+for _noisy in ("lightkurve", "lightkurve.utils", "astroquery", "astropy"):
+    logging.getLogger(_noisy).setLevel(logging.ERROR)      # their INFO lines flood the server log on every pixel read
 # Every tool only reads public archives and computes; nothing is created, changed or sent on the caller's behalf.
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 NOTE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
@@ -190,7 +193,7 @@ async def followup_start(tic: int, period_d: float, t0: float, duration_h: float
     job_status. 1-5 min, at most 12 sectors."""
     a = _followup_args(tic, period_d, t0, duration_h, depth_ppm)
     k = store.key("followup", a)
-    sid = store.session_id(dict(ctx.headers) if ctx.headers else {})
+    sid = _sid(ctx)
     if store.cache_get("followup", k) is None and store.job_get("followup", k)[0]["state"] not in ("queued", "running"):
         ok, wait = store.allow(sid, "heavy")
         if not ok:
@@ -208,7 +211,7 @@ async def job_status(job_id: str, ctx: Context, wait_s: float = 20.0) -> list:
     inconclusive, single_sector_only), per-sector checks, stitched ephemeris and fold plot."""
     if not re.fullmatch(r"[0-9a-f]{20}", job_id):
         raise ToolError("job_id is the 20-character id returned by followup_start")
-    sid = store.session_id(dict(ctx.headers) if ctx.headers else {})
+    sid = _sid(ctx)
     deadline = time.time() + max(0.0, min(float(wait_s), 25.0))
     last = None
     while True:
@@ -245,7 +248,7 @@ async def report_verdict(tic: int, verdict: str, reason: str, ctx: Context, hold
         raise ToolError(f"verdict must be one of {', '.join(VERDICTS)}")
     if deciding_test not in DECIDING:
         raise ToolError(f"deciding_test must be one of {', '.join(DECIDING)}")
-    sid = store.session_id(dict(ctx.headers) if ctx.headers else {})
+    sid = _sid(ctx)
     code, wording = core.DISPOSITION[verdict]
     out = {"recorded": True, "tic": int(tic), "verdict": verdict, "disposition": code, "disposition_wording": wording, "hold": bool(hold)}
     store.trace(sid, "report_verdict", {"tic": int(tic), "verdict": verdict, "hold": bool(hold), "deciding_test": deciding_test,
@@ -349,6 +352,7 @@ async def submit_vet(hunter_id: str, lead_id: int, verdict: str, reason: str, ct
         raise ToolError(f"verdict must be one of {', '.join(VERDICTS)}")
     if deciding_test not in DECIDING:
         raise ToolError(f"deciding_test must be one of {', '.join(DECIDING)}")
+    code, wording = core.DISPOSITION[verdict]
     lead = _lead_call(leads.get, lead_id)
     auto, has_vet, has_follow = _auto_status(lead)
     if auto is None:
@@ -372,7 +376,6 @@ async def submit_vet(hunter_id: str, lead_id: int, verdict: str, reason: str, ct
         summary = f"Signal {lead_id}: open. Candidate verdict recorded; the server's results read it as {auto}, so it cannot be listed. Awaiting another vetting."
     else:
         summary = f"Signal {lead_id}: open. Verdict recorded ({wording}); the server's results read it as {auto}. Awaiting another vetting."
-    code, wording = core.DISPOSITION[verdict]
     out = {"lead_id": int(lead_id), "lead_status": status, "verdict": verdict, "disposition": code, "disposition_wording": wording,
            "server_reading": auto, **info, "summary": summary,
            "handle_tally": me, "board": {k: bd[k] for k in ("leads_total", "leads_open", "leads_cleared", "leads_surviving")},

@@ -5,6 +5,7 @@ import numpy as np
 from tesshunt import pipeline as P
 from tesshunt import cubes
 from tesshunt.sweep_core import _central_aperture, candidate_bar
+from kepler_mcp import readout as R
 from kepler_mcp import store
 from tesshunt.star import position_at
 
@@ -86,23 +87,42 @@ def _cube(s, tic, sector, size):
 _flats = collections.OrderedDict()
 
 
+_stages = {}     # (tic, sector) -> stage list from the most recent pixel load in this call chain
+
+
+def _stage_list(tic, sector):
+    """Stages of the last _flat call for this star and Sector: [(name, what, seconds)]."""
+    return list(_stages.get((int(tic), int(sector)), []))
+
+
 def _flat(tic, sector):
     """(star, tpf, flat, aperture, cadence_min) for one sector; small in-memory LRU so search then vet is one fetch."""
     key = (int(tic), int(sector))
     with _flat_lock:
         if key in _flats:
             _flats.move_to_end(key)
-            return _flats[key]
+            hit = _flats[key]
+            _stages[key] = [("pixels", f"{hit[1].flux.shape[1]}x{hit[1].flux.shape[2]} cutout, {R.num(len(hit[2]))} cadences (in memory)", 0.0),
+                            ("curve", f"aperture {int(hit[3].sum())} px, rms {R.num(float(np.nanstd(hit[2].flux.value)) * 1e6)} ppm (in memory)", 0.0)]
+            return hit
     s = _star_tic(tic)
     if int(sector) not in s["sectors"]:
         raise ValueError(f"TIC {tic} was not observed in sector {sector}; observed sectors: {s['sectors']}")
     size, thr = _settings(s)
     with _lock(tic, sector):
+        ra_, dec_ = position_at(s, sector)
+        moved_ = (((ra_ - s["ra"]) * np.cos(np.radians(s["dec"]))) ** 2 + (dec_ - s["dec"]) ** 2) ** 0.5 * 3600
+        on_disk = os.path.exists(cubes.cube_path(int(tic), int(sector), size, "_pm" if moved_ > 4 else ""))
+        t_a = time.time()
         tpf = _cube(s, tic, sector, size)
         if tpf is None:
             raise LookupError(f"no full-frame-image cube available yet for sector {sector}")
+        t_b = time.time()
         flat, aper, n_glitch = _build_flat(tpf, thr)
         _ = tpf.wcs, tpf.flux, tpf.time   # finish the lazy loading while we hold the lock
+        t_c = time.time()
+        _stages[key] = [("pixels", f"{size}x{size} cutout, {R.num(tpf.flux.shape[0])} cadences" + (" (cached)" if on_disk else " from NASA MAST"), t_b - t_a),
+                        ("curve", f"aperture {int(aper.sum())} px, rms {R.num(float(np.nanstd(flat.flux.value)) * 1e6)} ppm", t_c - t_b)]
     if len(flat) < 300:
         raise ValueError(f"only {len(flat)} usable cadences in sector {sector}; too few to search")
     cad = float(np.nanmedian(np.diff(tpf.time.value)) * 1440)
@@ -215,6 +235,12 @@ def resolve_star(query):
     s["summary"] = f"TIC {s['ID']}, {tm}. " + (f"Observed in {n} Sector(s), {s['sectors'][0]} to {s['sectors'][-1]}. Stellar parameters: TIC v8." if n else "Not observed by TESS.")
     s["next_actions"] = ([act("catalog_check", "known planets and existing candidates", tic=s["ID"]),
                           act("search_transits", "transit search, earliest sector", tic=s["ID"], sector=s["sectors"][0])] if n else [])
+    teff, rad = s.get("Teff"), s.get("rad")
+    kind = (None if not (teff or rad) else "red dwarf" if (teff and teff < 3900) or (not teff and rad < 0.6) else
+            "orange dwarf" if (teff and teff < 5200) or (not teff and rad < 0.85) else "Sun-like star" if (teff and teff < 6000) or (not teff and rad < 1.2) else "hot star")
+    secs = ", ".join(str(x) for x in s["sectors"][:12]) + (f", and {n - 12} more" if n > 12 else "")
+    s["display"] = R.card(R.join(f"TIC {s['ID']}", kind, tm, f"{rad:.2f} R_Sun" if rad else None, f"{d:.0f} pc" if d else None),
+                          f"observed in {n} Sector{'s' if n != 1 else ''}: {secs}" if n else "not observed by TESS")
     return s, None
 
 
@@ -235,6 +261,13 @@ def catalog_check(tic):
     else:
         out["summary"] = "Not a known planet host, TOI, or CTOI." + ("" if ctoi is not None else " CTOI list unreachable.")
     out["next_actions"] = []
+    if out["known_planet_host"]:
+        toi = ", ".join(f"TOI-{t['toi']}" for t in out["toi"][:3] if t.get("toi") is not None)
+        out["display"] = R.line("CATALOGUE", "known planet host: " + ", ".join(out["planets"][:4]) + (f" ({toi})" if toi else ""), "a signal here is a recovery")
+    elif out["is_toi"] or out["is_ctoi"]:
+        out["display"] = R.line("CATALOGUE", "listed as a TOI" if out["is_toi"] else "listed as a CTOI", "a signal here is not new")
+    else:
+        out["display"] = R.line("CATALOGUE", "not a known planet host, TOI or CTOI" + ("" if ctoi is not None else " (CTOI list unreachable)"))
     return out, None
 
 
@@ -283,6 +316,8 @@ def light_curve(tic, sector):
     out["summary"] = (f"Sector {int(sector)}: {len(flat)} cadences at {cad:.0f} min over {out['time_end'] - out['time_start']:.1f} d, "
                       f"rms {out['noise_ppm']:.0f} ppm per cadence, {out['aperture_px']}-pixel aperture, FFI photometry.")
     out["next_actions"] = [act("search_transits", "transit search on this sector", tic=int(tic), sector=int(sector))]
+    out["display"] = R.fit(R.join(f"Sector {int(sector)}", f"{R.num(len(flat))} cadences at {cad:.0f} min over {out['time_end'] - out['time_start']:.1f} d",
+                                  f"rms {R.num(out['noise_ppm'])} ppm", f"{out['aperture_px']}-pixel aperture"), 90)
     return out, _png(fig)
 
 
@@ -291,13 +326,17 @@ def _density(s):
 
 
 def search_transits(tic, sector, min_period_d=0.3, max_period_d=13.0, min_snr=9.0, min_depth_ppm=0.0):
+    t_call = time.time()
     s, tpf, flat, aper, cad = _flat(tic, sector)
+    stages = _stage_list(tic, sector)
+    t_search = time.time()
     baseline = float(flat.time.value.max() - flat.time.value.min())
     if not (0.2 <= min_period_d < max_period_d <= 30):
         raise ValueError("need 0.2 <= min_period_d < max_period_d <= 30 days")
     max_period_d = min(max_period_d, baseline)
     r = P.search(flat, min_period=min_period_d, max_period=max_period_d, n_periods=15000,
                  min_duration_hours=0.5, max_duration_hours=max(0.75, min(6.0, 0.5 * min_period_d * 24)), duration_step_hours=0.25)
+    stages.append(("search", f"15,000 periods over {min_period_d:g}-{max_period_d:.3g} d", time.time() - t_search))
     v = P.vet(flat, r.period, r.t0, r.duration)
     max_dur = P.max_duration_hours(r.period, _density(s))
     passes, fails = candidate_bar(r.snr, r.depth * 1e6, r.duration * 24, r.period, max_dur, v, min_snr=min_snr, min_depth_ppm=min_depth_ppm, cadence_h=cad / 60)
@@ -338,6 +377,12 @@ def search_transits(tic, sector, min_period_d=0.3, max_period_d=13.0, min_snr=9.
     else:
         out["summary"] = head + "Fails the detection criteria: " + "; ".join(fails)[:240] + "."
         out["next_actions"] = [act("vet_signal", "classify the failure", **_sigargs(tic, sector, b))] if transit_like else []
+    out["stages"] = [{"stage": n_, "detail": w_, "seconds": round(t_, 2)} for n_, w_, t_ in stages]
+    state = ("transit-like: passes the detection criteria" if passes else "S/N below 8: consistent with noise" if r.snr < 8
+             else "not a detection: " + "; ".join(fails))
+    out["display"] = R.checklist(R.join("TRANSIT SEARCH", f"TIC {int(tic)}", f"Sector {int(sector)}"), stages,
+                                 [R.join(f"P = {b['period_d']:.4f} d", f"depth {R.num(b['depth_ppm'])} ppm", f"S/N {b['snr']:.1f}",
+                                         f"{b['n_transits']} transit{'s' if b['n_transits'] != 1 else ''}"), state], total_s=time.time() - t_call)
     plt = _plt()
     fig, ax = plt.subplots(2, 1, figsize=(9, 6))
     ax[0].plot(per, power, lw=0.6, color="k"); ax[0].set_xlabel("period [d]"); ax[0].set_ylabel("BLS power")
@@ -398,11 +443,25 @@ def neighbors(tic, sector, depth_ppm=None):
     else:
         out["summary"] = f"{len(others)} other star(s) within 3 pixels; none bright enough to reproduce a {depth_ppm:.0f} ppm signal."
     out["next_actions"] = []
+    short = "Gaia DR3" if src.startswith("Gaia") else "TESS Input Catalog"
+    if not others:
+        out["display"] = R.line("NEIGHBOURS", "no other catalogued star within 3 pixels")
+    else:
+        rows = []
+        for n_ in sorted(others, key=lambda x: -x["flux_relative_to_target"])[:8]:
+            need = n_.get("eclipse_depth_needed_to_fake_dip")
+            rows.append([f"{n_['sep_arcsec']:.1f} arcsec", f"{100 * n_['flux_relative_to_target']:.1f}%",
+                         ("--" if depth_ppm is None else "over 100%" if need is None else f"{100 * need:.0f}%"),
+                         ("--" if depth_ppm is None else "yes" if n_.get("can_fake_dip") else "no")])
+        out["display"] = R.table(R.join("NEIGHBOURS within 3 pixels", f"source {short}", f"signal {R.num(depth_ppm)} ppm" if depth_ppm else None),
+                                 [("SEPARATION", "r"), ("FLUX vs TARGET", "r"), ("ECLIPSE NEEDED", "r"), ("CAN MIMIC", "l")], rows,
+                                 footer=[f"  and {len(others) - 8} fainter"] if len(others) > 8 else [])
     return out, None
 
 
 def vet_signal(tic, sector, period_d, t0, duration_h):
     from tesshunt.vetting import verdict as _verdict
+    t_call = time.time()
     s, tpf, flat, aper, cad = _flat(tic, sector)
     dur = duration_h / 24
     if not (0.1 < period_d < 30 and 0.2 <= duration_h <= 12):
@@ -461,6 +520,14 @@ def vet_signal(tic, sector, period_d, t0, duration_h):
                        CANDIDATE_NOTE]}
     out["t0_bjd_tdb"] = bjd(t0)
     out["odd_minus_even_ppm"] = v["odd_depth_ppm"] - v["even_depth_ppm"]
+    out["tests"] = _vet_tests(depth_ppm, err, v, duration_h, max_dur, cad, period_d, c, location, out["neighbors_within_3px"])
+    follow = {"eclipsing_binary": "false positive", "not_significant": "not a detection in this Sector", "not_transit_shaped": "not transit-like",
+              "on_target": "single Sector, not yet a candidate", "likely_on_target": "single Sector, not yet a candidate",
+              "blended": "source cannot be assigned", "anomaly": "source uncertain", "off_target": "signal is on a neighbouring star",
+              "untestable": "localization not possible"}
+    out["display"] = R.test_table(R.join("VETTING", f"TIC {int(tic)}", f"Sector {int(sector)}", f"P = {period_d:.4f} d"),
+                                  [(t_["test"], t_["measured"], t_["result"]) for t_ in out["tests"]],
+                                  R.join(verdict, follow.get(verdict)), total_s=time.time() - t_call)
     out["secondary_phase_range"] = [0.15, 0.85]
     sec = ("" if verdict == "eclipsing_binary" else
            f" Deepest feature over phases 0.15-0.85: {any_sec:.0f} ppm ({any_sig:.1f} sigma against other phases).")
@@ -489,6 +556,38 @@ def vet_signal(tic, sector, period_d, t0, duration_h):
     ax[2].set_xlabel("orbital phase (transit at 0)"); ax[2].set_title("full phase curve: look for a second dip")
     fig.tight_layout()
     return out, _png(fig)
+
+
+def _vet_tests(depth_ppm, err, v, duration_h, max_dur, cad, period_d, c, location, neighbor_rows):
+    """The vetting tests as rows: what was measured and whether it passed. 'pass', 'FAIL', or '--' when the test cannot decide."""
+    tests = []
+    sig = depth_ppm / err if (err and err > 0) else float("nan")
+    tests.append({"test": "significance", "measured": f"{R.num(depth_ppm)} ppm ({sig:.1f} sigma)", "result": "pass" if sig >= 4 else "FAIL"})
+    diff = v["odd_depth_ppm"] - v["even_depth_ppm"]
+    if np.isfinite(diff):
+        tests.append({"test": "odd-even depth", "measured": f"{diff:+,.0f} +/- {R.num(err * 2 ** 0.5)} ppm", "result": "pass" if abs(diff) < 3 * err else "FAIL"})
+    else:
+        tests.append({"test": "odd-even depth", "measured": "only odd or only even transits observed", "result": "--"})
+    sec = f"{R.num(v['secondary_any_phase_ppm'])} ppm at phase {v['secondary_any_phase_at']:.2f} ({v['secondary_any_phase_sigma']:.1f} sigma)"
+    tests.append({"test": "secondary 0.15-0.85", "measured": sec,
+                  "result": "FAIL" if v["has_secondary"] else "--" if v.get("secondary_single_event") else "pass"})
+    limit = 1.5 * max_dur + cad / 60
+    tests.append({"test": "duration", "measured": f"{duration_h:.2f} h (limit {limit:.2f} h)", "result": "pass" if duration_h <= limit + 1e-6 else "FAIL"})
+    duty = 100 * duration_h / 24 / period_d
+    tests.append({"test": "fraction of orbit", "measured": f"{duty:.1f}% (limit 15%)", "result": "pass" if duty < 15 else "FAIL"})
+    ss = c["shift_sigma"]
+    tests.append({"test": "centroid shift", "measured": f"{ss:.1f} sigma ({c['shift_px']:.3f} px)" if np.isfinite(ss) else "not measurable",
+                  "result": "--" if not np.isfinite(ss) else "pass" if ss < 3 else "FAIL" if location in ("anomaly", "off_target") else "--"})
+    snr, dpx = c["diff_peak_snr"], c["diff_peak_dpx"]
+    if not np.isfinite(snr) or snr < 4:
+        tests.append({"test": "difference image", "measured": f"too weak to localize ({snr:.0f} sigma)" if np.isfinite(snr) else "not measurable", "result": "--"})
+    else:
+        tests.append({"test": "difference image", "measured": f"peak {dpx:.1f} px from target ({snr:.0f} sigma)", "result": "pass" if dpx <= 0.75 else "FAIL"})
+    others = [n for n in neighbor_rows if not n["is_target"]]
+    mimic = [n for n in others if n.get("can_fake_dip")]
+    tests.append({"test": "neighbours", "measured": f"{len(others)} within 3 px, {len(mimic)} could mimic the signal",
+                  "result": "FAIL" if location == "blended" else "--" if mimic else "pass"})
+    return tests
 
 
 def fold_plot(tic, sectors, period_d, t0):
