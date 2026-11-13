@@ -14,6 +14,10 @@ CLAIM_SECONDS = 2 * 3600
 MAX_CLAIMS = 2
 OPEN_SECTORS = [int(x) for x in os.environ.get("KEPLER_OPEN_SECTORS", "7 8").split()]
 TESS_SECTORS = int(os.environ.get("KEPLER_TESS_SECTORS", 100))   # public Sectors, approximate; the denominator of "TESS data catalogued"
+# Share of TESS dwarf-star data (Tmag <= 15) already transit-searched by professional surveys. Estimate, 2026-11-12: MIT's Quick-Look Pipeline
+# extracts and BLS-searches every star brighter than Tmag 13.5 (arXiv:2110.05542, 2302.01293); in four TIC sample fields (galactic latitude
+# -15, +30, -50, +75; 3,203 dwarfs with Teff 2300-6000 K) 22.6% of stars to Tmag 15 are brighter than 13.5. Range across fields: 18-35%.
+PRIOR_SURVEY_SHARE = float(os.environ.get("KEPLER_PRIOR_SURVEY_SHARE", 0.23))
 DETECTORS_PER_SECTOR = 16                                         # 4 cameras x 4 detectors
 PAUSED = os.environ.get("KEPLER_PATCHES_PAUSED", "0") == "1"
 _lock = threading.RLock()
@@ -338,6 +342,11 @@ def summary(sector=None, now=None):
                     "fields_searched_equivalent": round(done_equiv, 4), "percent_of_tess_catalogued": round(100 * done_equiv / fields_total, 5),
                     "percent_of_mapped_patches": round(100 * tot["searched"] / tot["patches"], 2) if tot["patches"] else 0.0,
                     "basis": "fields = public Sectors x 16 detectors x star types; Sectors overlap on the sky, so this is a share of TESS data, not of sky area"}
+        kep = (1 - PRIOR_SURVEY_SHARE) * coverage["percent_of_tess_catalogued"]      # Kepler's fields are the faint remainder
+        coverage |= {"percent_prior_surveys": round(100 * PRIOR_SURVEY_SHARE, 1), "percent_kepler": round(kep, 5),
+                     "percent_collective": round(100 * PRIOR_SURVEY_SHARE + kep, 4),
+                     "prior_basis": "estimate: stars brighter than Tmag 13.5, which MIT's Quick-Look Pipeline searches in every Sector, as a share of dwarf stars to Tmag 15 "
+                                    "(22.6% in four TIC sample fields, 18-35% by galactic latitude). Searched is not the same as vetted."}
         return {"open_sectors": OPEN_SECTORS, "patch_size": PATCH_SIZE, "totals": tot, "coverage": coverage, "unopened_by_star_type": ready, "detectors": dets,
                 "detectors_being_mapped": building, "openers": openers,
                 "star_types": {k: v["finds"] for k, v in POPULATIONS.items()}}

@@ -884,7 +884,8 @@ h1,h2{{font-size:1rem;font-weight:700;line-height:1.2;margin:0}} h1{{font-stretc
 hr.dots{{height:1rem;border:none;margin:.25rem 0 1rem;background:radial-gradient(#777 .5px,transparent 1px) 0 0/3px 3px}}
 .read{{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:.5rem}} .read b{{font-size:2rem;line-height:2rem}}
 .bar{{height:3.5rem;border:.1rem solid #000;box-shadow:2px 2px #bbb;background:radial-gradient(#bbb .5px,transparent 1px) 0 0/3px 3px}}
-.bar i{{display:block;height:100%;background:#002dce;min-width:3px}}
+.bar{{display:flex}} .bar i{{display:block;height:100%;background:#002dce;min-width:4px}} .bar i.prior{{background:#555}}
+.key i{{display:inline-block;width:.7rem;height:.7rem;margin-right:.4rem;background:#002dce}} .key i.prior{{background:#555}}
 .ticks{{display:flex;justify-content:space-between;font-size:.8rem;color:#555;border-top:0;margin:.25rem 0 1rem}}
 table{{width:100%;border-collapse:collapse}} td,th{{height:1.85rem;line-height:1.4rem;padding:.2rem .4rem 0;border:.1rem solid #bfbfbf;text-align:left;white-space:nowrap}}
 th{{font-weight:700;border-bottom:.1rem solid #000}} .n{{text-align:right}} .kv th{{border-bottom:.1rem solid #bfbfbf;font-weight:400;color:#555;width:25%}}
@@ -895,10 +896,11 @@ th{{font-weight:700;border-bottom:.1rem solid #000}} .n{{text-align:right}} .kv 
 <div class="head"><h1>Kepler MCP</h1><span>Generative Experiences</span></div>
 <div class="colorbar" aria-hidden="true"><i style="background:#000"></i><i style="background:#003f9b"></i><i style="background:#0092ff"></i><i style="background:#00c986"></i><i style="background:#ffb700"></i><i style="background:#ff4a03"></i><i style="background:#e7040f"></i></div>
 <h2>1. TESS data catalogued</h2><hr class="dots">
-<div class="read"><b class="mono">{pct:.4f}%</b><span class="mono">{cv['fields_searched_equivalent']:.2f} / {cv['fields_total']:,} fields</span></div>
-<div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{pct}" aria-label="Share of TESS data catalogued"><i style="width:{pct}%"></i></div>
+<div class="read"><b class="mono">{cv['percent_collective']:.4f}%</b><span class="mono">collective</span></div>
+<div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{cv['percent_collective']}" aria-label="Share of TESS data catalogued, prior surveys plus Kepler"><i class="prior" style="width:{cv['percent_prior_surveys']}%"></i><i style="width:{cv['percent_kepler']}%"></i></div>
 <div class="ticks"><span>0</span><span>25</span><span>50</span><span>75</span><span>100%</span></div>
-<div class="wrap"><table class="kv"><tr><th>Stars searched</th><td>{st['stars_searched']:,}</td><th>Patches searched</th><td>{st['searched']:,} / {st['patches']:,}</td></tr>
+<div class="wrap"><table class="kv"><tr><th class="key"><i class="prior"></i>Prior surveys (est.)</th><td>{cv['percent_prior_surveys']:.1f}%</td><th class="key"><i></i>Kepler</th><td>{cv['percent_kepler']:.4f}%</td></tr>
+<tr><th>Stars searched</th><td>{st['stars_searched']:,}</td><th>Patches searched</th><td>{st['searched']:,} / {st['patches']:,}</td></tr>
 <tr><th>Fields mapped</th><td>{cv['fields_mapped']:,} / {cv['fields_total']:,}</td><th>Sectors open</th><td>{sectors}</td></tr></table></div>
 <h2>2. Leaderboard</h2><hr class="dots">
 <div class="wrap"><table class="board"><tr><th class="n">#</th><th>Planet hunter</th><th class="n">Stars searched</th><th class="n">Signals found</th><th class="n">Signals vetted</th></tr>{lead_rows}</table></div>
