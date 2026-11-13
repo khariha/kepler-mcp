@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kepler search spike</title>
+<style>
+  :root { --bg: #fafaf7; --fg: #111; --mute: #666; --line: #ccc; --accent: #1f5fd1; --dot: #999; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #111; --fg: #eee; --mute: #999; --line: #333; --accent: #6ea0ff; --dot: #777; } }
+  body { background: var(--bg); color: var(--fg); font: 13px/1.5 ui-monospace, Menlo, monospace; margin: 0; padding: 16px; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 14px; letter-spacing: .08em; text-transform: uppercase; margin: 0 0 12px; }
+  pre { border: 1px solid var(--line); padding: 10px 12px; white-space: pre-wrap; margin: 0 0 12px; }
+  canvas { width: 100%; height: 220px; border: 1px solid var(--line); display: block; margin-bottom: 12px; }
+  .mute { color: var(--mute); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Kepler · in-browser transit search (spike)</h1>
+  <pre id="log">starting…</pre>
+  <canvas id="fold" width="1440" height="440"></canvas>
+  <canvas id="pg" width="1440" height="440"></canvas>
+  <p class="mute">Pixels are range-read straight from NASA's public TESS cubes on AWS; the search runs in this tab (Pyodide).</p>
+</main>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.28.3/full/pyodide.js"></script>
+<script>
+const P = new URLSearchParams(location.search);
+const star = {
+  name: P.get("name") || "pi Mensae (TIC 261136679)",
+  sector: +(P.get("sector") || 1), cam: +(P.get("cam") || 4), ccd: +(P.get("ccd") || 2),
+  col: +(P.get("col") || 1632.29), row: +(P.get("row") || 259.79), size: +(P.get("size") || 15),
+};
+const URL_CUBE = `https://stpubdata.s3.amazonaws.com/tess/public/mast/tess-s${String(star.sector).padStart(4, "0")}-${star.cam}-${star.ccd}-cube.fits`;
+const logEl = document.getElementById("log");
+const lines = [`STAR    ${star.name} · Sector ${star.sector} · camera ${star.cam} CCD ${star.ccd}`];
+const t0 = performance.now();
+let bytes = 0;
+function log(s) { lines.push(s); logEl.textContent = lines.join("\n"); }
+function since(t) { return ((performance.now() - t) / 1000).toFixed(1) + " s"; }
+
+async function rng(a, n) {
+  const r = await fetch(URL_CUBE, { headers: { Range: `bytes=${a}-${a + n - 1}` } });
+  if (r.status !== 206 && r.status !== 200) throw new Error(`S3 returned ${r.status}`);
+  const b = new Uint8Array(await r.arrayBuffer()); bytes += b.length; return b;
+}
+async function pool(items, k, fn) {
+  const out = new Array(items.length); let i = 0;
+  await Promise.all(Array.from({ length: k }, async () => { while (i < items.length) { const j = i++; out[j] = await fn(items[j]); } }));
+  return out;
+}
+
+function plot(id, xs, ys, opts) {
+  const c = document.getElementById(id), g = c.getContext("2d"), W = c.width, H = c.height, pad = 50;
+  const css = getComputedStyle(document.documentElement);
+  g.clearRect(0, 0, W, H);
+  const xmin = opts.xmin ?? Math.min(...xs), xmax = opts.xmax ?? Math.max(...xs);
+  const sel = ys.filter((_, i) => xs[i] >= xmin && xs[i] <= xmax);
+  const lo = opts.ymin ?? Math.min(...sel), hi = opts.ymax ?? Math.max(...sel);
+  const X = x => pad + (x - xmin) / (xmax - xmin) * (W - 2 * pad), Y = y => H - pad - (y - lo) / (hi - lo) * (H - 2 * pad);
+  g.fillStyle = css.getPropertyValue("--dot");
+  if (opts.line) { g.strokeStyle = css.getPropertyValue("--accent"); g.lineWidth = 2; g.beginPath();
+    xs.forEach((x, i) => i ? g.lineTo(X(x), Y(ys[i])) : g.moveTo(X(x), Y(ys[i]))); g.stroke(); }
+  else xs.forEach((x, i) => { if (x >= xmin && x <= xmax) g.fillRect(X(x) - 2, Y(ys[i]) - 2, 4, 4); });
+  if (opts.bins) { g.fillStyle = css.getPropertyValue("--accent"); opts.bins.forEach(([x, y]) => g.fillRect(X(x) - 5, Y(y) - 5, 10, 10)); }
+  g.fillStyle = css.getPropertyValue("--mute"); g.font = "24px ui-monospace, Menlo, monospace";
+  g.fillText(opts.title, pad, 32);
+}
+
+(async () => {
+  try {
+    let t = performance.now();
+    const py = await loadPyodide();
+    log(`PYTHON  Pyodide loaded                                   ${since(t)}`);
+    t = performance.now();
+    await py.loadPackage(["numpy", "scipy", "astropy"]);
+    py.FS.writeFile("/home/pyodide/search_core.py", await (await fetch("search_core.py")).text());
+    py.runPython("import sys; sys.path.insert(0, '/home/pyodide'); import search_core as S, numpy as np, json");
+    log(`        numpy, scipy, astropy ready                      ${since(t)}`);
+
+    t = performance.now();
+    const head = await rng(0, 2880 * 8);
+    py.globals.set("head", head);
+    const geo = py.runPython(`
+h = bytes(head.to_py()).decode('latin-1')
+h0, l0 = S.parse_header(h); h1, l1 = S.parse_header(h[l0:])
+NF, NC, NR = h1['NAXIS2'], h1['NAXIS3'], h1['NAXIS4']; data0 = l0 + l1
+json.dumps(dict(NF=NF, NC=NC, NR=NR, data0=data0, tab=data0 + (NR*NC*NF*8 + 2879)//2880*2880))`);
+    const G = JSON.parse(geo);
+    const thead = await rng(G.tab, 2880 * 30);
+    py.globals.set("thead", thead);
+    const tl = JSON.parse(py.runPython(`th, tl = S.parse_header(bytes(thead.to_py()).decode('latin-1')); json.dumps([tl, th['NAXIS1']*th['NAXIS2']])`));
+    const table = await rng(G.tab + tl[0], tl[1]);
+    const c0 = Math.round(star.col) - 1 - (star.size >> 1), r0 = Math.round(star.row) - 1 - (star.size >> 1);
+    const rows = Array.from({ length: star.size }, (_, k) => r0 + k);
+    const strips = await pool(rows, 6, r => rng(G.data0 + ((r * G.NC + c0) * G.NF * 2) * 4, star.size * G.NF * 8));
+    log(`PIXELS  ${star.size}x${star.size} cutout, ${G.NF} frames, ${(bytes / 1e6).toFixed(1)} MB from NASA S3       ${since(t)}`);
+
+    t = performance.now();
+    py.globals.set("table", table); py.globals.set("strips", strips);
+    py.globals.set("js_progress", (s, k) => { const o = JSON.parse(k);
+      if (s === "curve") log(`CURVE   aperture ${o.aperture_px} px, ${o.cadences} cadences                   ${since(t)}`);
+      if (s === "flat") log(`FLAT    ${o.cadences} cadences, rms ${Math.round(o.noise_ppm)} ppm                    ${since(t)}`);
+      if (s === "search") log(`SEARCH  15,000 periods x 23 durations                     ${since(t)}`); });
+    const res = JSON.parse(py.runPython(`
+tstart, tstop, q = S.read_table(bytes(table.to_py()), th)
+flux, err = S.strips_to_cube([bytes(s.to_py()) for s in strips], NF, ${star.size})
+r = S.run_star((tstart + tstop) / 2, flux, err, q, progress=lambda s, **k: js_progress(s, json.dumps(k)))
+json.dumps(r)`));
+    if (res.status !== "ok") { log(`RESULT  ${res.status}`); return; }
+    log(`RESULT  P = ${res.period_d.toFixed(5)} d · depth ${Math.round(res.depth_ppm)} ppm · ${res.duration_h.toFixed(2)} h · S/N ${res.snr.toFixed(1)}`);
+    log(`        T0 = ${res.t0.toFixed(5)} BTJD · total ${since(t0)}`);
+
+    const bins = [], w = res.duration_h / 4;
+    for (let x = -3 * res.duration_h; x <= 3 * res.duration_h; x += w) {
+      const v = res.fold_f.filter((_, i) => res.fold_h[i] >= x && res.fold_h[i] < x + w);
+      if (v.length) bins.push([x + w / 2, v.reduce((a, b) => a + b) / v.length]);
+    }
+    const ys = bins.map(b => b[1]);
+    plot("fold", res.fold_h, res.fold_f, { xmin: -3 * res.duration_h, xmax: 3 * res.duration_h, bins,
+      ymin: Math.min(...ys) - 3 * res.noise_ppm / 1e6, ymax: Math.max(...ys) + 3 * res.noise_ppm / 1e6,
+      title: `folded at P = ${res.period_d.toFixed(4)} d (hours from mid-transit)` });
+    plot("pg", res.pg_period, res.pg_power, { line: true, title: "BLS periodogram (period, days)" });
+  } catch (e) { log(`ERROR   ${e.message || e}`); console.error(e); }
+})();
+</script>
+</body>
+</html>
