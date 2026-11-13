@@ -519,6 +519,7 @@ def vet_signal(tic, sector, period_d, t0, duration_h):
                        "an on_target verdict does not rule out a bound or background star inside the same pixel",
                        CANDIDATE_NOTE]}
     out["t0_bjd_tdb"] = bjd(t0)
+    out["period_d"] = period_d
     out["odd_minus_even_ppm"] = v["odd_depth_ppm"] - v["even_depth_ppm"]
     out["tests"] = _vet_tests(depth_ppm, err, v, duration_h, max_dur, cad, period_d, c, location, out["neighbors_within_3px"])
     follow = {"eclipsing_binary": "false positive", "not_significant": "not a detection in this Sector", "not_transit_shaped": "not transit-like",

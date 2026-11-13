@@ -34,8 +34,21 @@ def join(*parts):
 
 
 def line(label, *parts, label_width=11):
-    """LABEL      part . part . part"""
-    return fit(f"{label:<{label_width}} {join(*parts)}".rstrip())
+    """LABEL      part . part . part      Wraps onto further lines, indented under the first part, instead of cutting a part off."""
+    parts = [str(p) for p in parts if p not in (None, "")]
+    pad = " " * (label_width + 1)
+    lines, cur = [], f"{label:<{label_width}} "
+    for i, part in enumerate(parts):
+        piece = part if cur.strip() in ("", str(label)) or cur.endswith(" ") and cur.strip() == str(label) else DOT + part
+        if cur.rstrip() == str(label):
+            piece = part
+        if len(cur) + len(piece) > WIDTH and cur.strip() not in ("", str(label)):
+            lines.append(cur.rstrip())
+            cur = pad + part
+        else:
+            cur += piece
+    lines.append(cur.rstrip())
+    return "\n".join(fit(x) for x in lines)
 
 
 def card(*lines):

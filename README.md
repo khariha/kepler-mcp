@@ -68,7 +68,7 @@ Prompts: `hunt` (procedure for vetting leads), `check_star(star)` (procedure for
 | `report_verdict(tic, verdict, reason)` | optional: record your final call | instant |
 | `read_guide()` | how transit signals fool you, and this server's limits | instant |
 
-**Readouts.** `find_planets`, `open_patch` and `patch_status` return `display`: a short text block (the opening notice, a field card, live search progress with a bar and per-star lines) that the client prints verbatim. During a field search the helper reports progress to the hub, so the readout updates in the conversation.
+**Readbacks.** Almost every result carries `display`, a short plain-text readback that the client prints verbatim, in the form that suits the event: an identity card for a star lookup, a one-line catalogue status, a staged checklist with timings for a transit search, a pass/fail table of tests for vetting, a table of neighbours, a live Sector-by-Sector table for the multi-sector follow-up, a live panel for a field search, a progress line while a detector is being mapped, and one-line confirmations for sign-in, signals and verdicts. A signal that is listed as a planet candidate gets its own block.
 
 **Result contract.** Every result carries `summary` (what was measured or decided, one or two neutral sentences), `next_actions` (suggested calls as `{tool, args, why}` with complete arguments), and `caveats`. Resource `kepler://guide` is the vetting guide ([kepler_mcp/guide.md](kepler_mcp/guide.md)).
 

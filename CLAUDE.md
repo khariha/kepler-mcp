@@ -15,7 +15,8 @@ MCP server for finding and vetting transiting planet candidates in TESS full-fra
 ## Rules
 - Output says "planet candidate", never "planet" or "discovered".
 - Vocabulary: AAS-journal and TESS follow-up usage (see the Terminology table in kepler_mcp/guide.md). Epochs also in BJD_TDB. No "discovered", "confirmed", "validated"; no TOI numbers; disposition codes are ours, not TFOPWG's.
-- Readouts: `display` blocks are plain text printed verbatim by the client. The session opens with the fixed welcome notice (server.WELCOME); do not dress it up.
+- Readbacks: every event returns `display`, built only with kepler_mcp/readout.py (line, card, checklist, test_table, table, progress, block), at most 66 columns, no emoji. Choose the form by what the reader needs: a fact gets a line, staged work a checklist, tests a table, a comparison a table, a long job a live readout, a state change one line. The session opens with the fixed welcome notice (server.WELCOME).
+- After any change to a tool, run the live chain (all workflows through a running server, following only next_actions): unit tests do not catch import-order or wiring faults.
 - Voice: instrument. Tool output is terse and neutral: no greetings, encouragement, second person, or coaching. The `lesson` tool is the one exception.
 - Result contract: every result has `summary` (neutral, one or two sentences), `next_actions` (list of {tool, args, why} built with core.act, arguments complete), and `caveats`. No prose instructions to the model inside results.
 - Tools return JSON numbers plus an optional PNG, with a `caveats` list. An archive failure raises ToolError; it is never turned into a verdict.
@@ -63,4 +64,5 @@ MCP server for finding and vetting transiting planet candidates in TESS full-fra
 - Follow-up said "does not repeat" for signals that every Sector shows → the stitched period refinement locked onto an alias, and Sectors were then judged at an ephemeris that missed their transits; one single-Sector period cannot be phased across years → a Sector contradicts only if the signal is also absent at that Sector's own best-fit ephemeris; otherwise report "not phased across Sectors", judge each Sector locally at 5 sigma, and publish no stitched ephemeris or record.
 - One Sector showed two different stars' signals about five times deeper than the others → the aperture differs between Sectors, so dilution by neighbours differs → a detection whose depth is off by more than a factor of two is "depth differs", not agreement and not contradiction, with a caveat pointing at neighbours.
 - A bulk find-and-replace turned the body of a new helper into a call to itself (infinite recursion) → when rewiring call sites with replace, define the helper after the replace or exclude it.
+- Every pixel tool failed with "'Logger' object has no attribute '_set_defaults'" → logging.getLogger("astropy") ran before astropy was imported, creating a plain logger where astropy installs its own class → quiet astropy through `from astropy import log`; and run the live workflow script after any change to server start-up, because unit tests import in a different order.
 

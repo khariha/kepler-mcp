@@ -47,6 +47,25 @@ def cache_get(tool, k):
     return result, (open(png, "rb").read() if os.path.exists(png) else None)
 
 
+def cache_find(tool, match):
+    """Cached results of a tool for which match(result) is true, newest first. Used to accept evidence that was produced
+    with slightly different arguments than the ones on record."""
+    d = os.path.join(DATA, "cache", tool)
+    if not os.path.isdir(d):
+        return []
+    hits = []
+    for name in os.listdir(d):
+        if name.endswith(".json"):
+            p = os.path.join(d, name)
+            try:
+                r = json.load(open(p))
+                if match(r):
+                    hits.append((os.path.getmtime(p), r))
+            except Exception:
+                continue
+    return [r for _, r in sorted(hits, key=lambda x: -x[0])]
+
+
 def cache_put(tool, k, result, png=None):
     p = _path(tool, k, "json")
     tmp = p + ".tmp"

@@ -440,6 +440,8 @@ def test_readout_forms_fit_and_align():
     assert R.num(3192.4) == "3,192" and R.num(None) == "--" and R.num(0.4567, 2) == "0.46"
     assert R.join("a", None, "", "b") == "a · b"
     assert R.line("CATALOGUE", "not a known planet host, TOI or CTOI") == "CATALOGUE   not a known planet host, TOI or CTOI"
+    long = R.line("SIGNAL 7", "TIC 61994665", "Sector 7", "P = 5.0645 d", "3,192 ppm", "found by planet_hunter", "unvetted")
+    assert long.split("\n") == ["SIGNAL 7    TIC 61994665 \u00b7 Sector 7 \u00b7 P = 5.0645 d \u00b7 3,192 ppm", "            found by planet_hunter \u00b7 unvetted"]
     assert len(R.fit("x" * 200)) == 66 and R.fit("x" * 200).endswith("…")
     c = _narrow(R.checklist("TRANSIT SEARCH · TIC 61994665 · Sector 7",
                             [("pixels", "15x15 cutout, 1,093 cadences (cached)", 0.2), ("curve", "aperture 6 px, rms 2,410 ppm", 3.1),
@@ -483,11 +485,16 @@ def test_submit_vet_end_to_end_with_cached_evidence(tmp_data):
     assert r1["lead_status"] == "open" and r1["disposition"] == "PC" and "second independent" in r1["summary"]
     r2 = run(hunter_id=b, lead_id=lead["lead_id"], verdict="candidate", reason="agree", deciding_test="recovery")
     assert r2["lead_status"] == "surviving" and "planet candidate" in r2["summary"]
+    assert r1["display"].startswith("VERDICT") and "planet candidate (PC)" in r1["display"] and "awaiting another vetting" in r1["display"]
+    blk = r2["display"].split("\n")
+    assert "=" * 66 in blk and any("PLANET CANDIDATE LISTED" in x for x in blk) and "vetted by ann, bob" in r2["display"] and all(len(x) <= 66 for x in blk)
     other = leads.claim_next(a)
     sig2 = {"tic": other["tic"], "sector": other["sector"], "period_d": other["period_d"], "t0": other["t0"], "duration_h": other["duration_h"]}
-    store.cache_put("vet_signal", store.key("vet_signal", sig2), {"verdict": "likely_on_target"})
-    store.cache_put("followup", store.key("followup", server._followup_args(other["tic"], other["period_d"], other["t0"], other["duration_h"], other["depth_ppm"])),
-                    {"status": "does_not_repeat"})
+    # evidence produced with slightly different arguments (a re-measured depth, a period off by 0.2%) still counts for the same signal
+    store.cache_put("vet_signal", "k1", {"verdict": "likely_on_target", "tic": other["tic"], "period_d": other["period_d"] * 1.002})
+    store.cache_put("followup", "k2", {"status": "does_not_repeat", "tic": other["tic"], "input": {"period_d": other["period_d"], "depth_ppm": other["depth_ppm"] + 26}})
+    store.cache_put("followup", "k3", {"status": "repeats", "tic": other["tic"] + 1, "input": {"period_d": other["period_d"]}})        # another star: ignored
+    assert server._same_signal(2.0, 4.0) and server._same_signal(4.0, 2.0) and not server._same_signal(2.0, 2.1)
     r3 = run(hunter_id=a, lead_id=other["lead_id"], verdict="systematics_or_noise", reason="not recovered", deciding_test="recovery")
     assert r3["lead_status"] == "cleared" and r3["disposition"] == "FA" and "false alarm" in r3["summary"]
     r4 = anyio.run(lambda: server.report_verdict(tic=5, verdict="inconclusive", reason="n/a", ctx=None))
@@ -520,3 +527,19 @@ def test_alias_guard_helpers():
     assert agree2 == [7] and contradict2 == [99]                                       # a Sector that could have seen it and did not
     tbl = core.followup_table(1, 3.0, [7, 33, 87], [{"sector": 7, "status": "ok", "cadence_min": 30, "depth_ppm": 3000, "snr": 9}], running=True)
     _narrow(tbl); assert "running..." in tbl and "waiting" in tbl and "T+00:00" in tbl
+
+
+def test_queue_and_mapping_readbacks(tmp_data):
+    import anyio
+    from kepler_mcp import server, sky
+    leads = _leads(tmp_data, 1)
+    j = anyio.run(lambda: server.join(handle="ann", recovery_word="pass-word", ctx=None))
+    assert j["display"].startswith("REGISTERED") and "ann" in j["display"] and "0 signals vetted" in j["display"]
+    assert anyio.run(lambda: server.join(handle="ann", recovery_word="pass-word", ctx=None))["display"].startswith("SIGNED IN")
+    lead = anyio.run(lambda: server.next_lead(hunter_id=j["hunter_id"], ctx=None))
+    assert lead["display"].startswith(f"SIGNAL {lead['lead_id']}") and "unvetted" in lead["display"] and all(len(x) <= 66 for x in lead["display"].split("\n"))
+    sky._mapping.clear(); sky.mark_ccd(7, 1, 2, "building", "orange")
+    sky.set_map_progress(7, 1, 2, "orange", "cone 2 of 4: 4310 stars so far", now=1000)
+    m = sky.map_progress(now=1060)
+    assert len(m) == 1 and "MAPPING Sector 7, camera 1, detector 2, orange stars" in m[0]["display"] and "cone 2 of 4" in m[0]["display"] and "4,310 stars" in m[0]["display"]
+    assert all(len(x) <= 66 for x in m[0]["display"].split("\n"))

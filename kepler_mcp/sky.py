@@ -74,6 +74,37 @@ def build_ccd(sector, camera, ccd, stars, pop="red"):
     return n_patches
 
 
+_mapping = {}
+
+
+def set_map_progress(sector, camera, ccd, pop, message, now=None):
+    """Progress line from the target selection while a detector is being mapped."""
+    import re
+    g = _mapping.setdefault((sector, camera, ccd, pop), {"started": now or time.time(), "cone": 0, "cones": 4, "stars": 0, "note": ""})
+    m = re.search(r"cone (\d+) of (\d+): (\d+) stars", str(message))
+    if m:
+        g.update(cone=int(m.group(1)), cones=int(m.group(2)), stars=int(m.group(3)))
+    g["note"] = str(message)[:100]; g["updated"] = now or time.time()
+
+
+def map_progress(now=None):
+    """Detectors being mapped right now, each with a ready-to-show progress block."""
+    from kepler_mcp import readout as R
+    now = now or time.time()
+    out = []
+    with _lock, _db() as c:
+        building = [dict(r) for r in c.execute("select sector, camera, ccd, pop from ccds where status='building'")]
+    for b in building:
+        g = _mapping.get((b["sector"], b["camera"], b["ccd"], b["pop"])) or {"started": now, "cone": 0, "cones": 4, "stars": 0}
+        elapsed = now - g["started"]
+        per = elapsed / g["cone"] if g["cone"] else None
+        left = f"about {max(1, round(per * (g['cones'] - g['cone'] + 1) / 60))} min" if per else "starting"
+        b["display"] = R.progress(f"MAPPING Sector {b['sector']}, camera {b['camera']}, detector {b['ccd']}, {b['pop']} stars", g["cone"], g["cones"] + 1,
+                                  f"cone {g['cone']} of {g['cones']}", f"{R.num(g['stars'])} stars so far", left)
+        out.append(b)
+    return out
+
+
 def ccd_status(sector, camera, ccd, pop="red"):
     with _lock, _db() as c:
         r = c.execute("select status from ccds where sector=? and camera=? and ccd=? and pop=?", (sector, camera, ccd, pop)).fetchone()

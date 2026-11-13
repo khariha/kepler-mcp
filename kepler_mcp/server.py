@@ -15,11 +15,17 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
 from kepler_mcp import core, leads, sky, store
+from kepler_mcp import readout as R
 
 warnings.filterwarnings("ignore")
 import logging
-for _noisy in ("lightkurve", "lightkurve.utils", "astroquery", "astropy"):
+for _noisy in ("lightkurve", "lightkurve.utils"):
     logging.getLogger(_noisy).setLevel(logging.ERROR)      # their INFO lines flood the server log on every pixel read
+try:
+    from astropy import log as _astropy_log               # astropy installs its own logger class: never create "astropy" by name first
+    _astropy_log.setLevel("WARNING")
+except Exception:
+    pass
 # Every tool only reads public archives and computes; nothing is created, changed or sent on the caller's behalf.
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 NOTE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
@@ -52,7 +58,9 @@ Results
 
 Conduct
 - Session start: call `find_planets` first and print its `display` verbatim in a code block, with nothing before it. Then ask what to do, in one line.
-- `display` blocks are console readouts. Always print them verbatim in a code block, unedited, before any commentary.
+- Readbacks: almost every result carries `display`, a short plain-text readback of that event (an identity card, a checklist of stages, a table
+  of tests, a table of Sectors, a progress line, a one-line confirmation). Print every `display` verbatim in a code block, unedited, before any
+  commentary, for every call, including the short ones. Commentary then adds what the readback does not say.
 - Before a step that takes more than a few seconds, or that runs a command, state in one or two sentences what it does, what it reads and sends,
   and how long it takes. Then proceed in the same turn. Do not start silently, and do not stop to ask permission: the client's own permission
   prompt is the consent step.
@@ -219,7 +227,9 @@ async def job_status(job_id: str, ctx: Context, wait_s: float = 20.0) -> list:
         n_rows = len(state.get("rows") or [])
         if first_rows is None:
             first_rows = n_rows
-        if hit is not None or state["state"] in ("failed", "unknown") or time.time() >= deadline or n_rows > first_rows:
+        planned = len(((state.get("plan") or {}).get("plan") or {}).get("sectors") or []) or 4
+        step = max(1, -(-planned // 4))                          # about four readings per follow-up, not one per Sector
+        if hit is not None or state["state"] in ("failed", "unknown") or time.time() >= deadline or n_rows >= first_rows + step:
             break
         if state.get("progress") and state["progress"] != last:
             last = state["progress"]
@@ -287,6 +297,9 @@ async def join(handle: str, recovery_word: str, ctx: Context) -> dict:
         raise ToolError(f"rate limit reached; retry in about {max(1, wait // 60)} min")
     out = _lead_call(leads.join, handle, recovery_word)
     store.trace(_sid(ctx), "join", {"handle": out["handle"], "returning": out["returning"]}, {"joined": True}, 0, False)
+    tally = leads.stats(out["hunter_id"])
+    out["display"] = R.line("SIGNED IN" if out["returning"] else "REGISTERED", out["handle"],
+                            f"{tally['leads_vetted']} signal{'s' if tally['leads_vetted'] != 1 else ''} vetted", f"{tally['on_surviving_leads']} on the board")
     return out | {"summary": (f"Signed in as {out['handle']}." if out["returning"] else f"Registered handle {out['handle']}.")
                              + " The same handle and recovery word return this hunter_id in any later session.",
                   "next_actions": [core.act("next_lead", "take an unvetted lead", hunter_id=out["hunter_id"]),
@@ -321,6 +334,9 @@ async def next_lead(hunter_id: str, ctx: Context, star_type: str | None = None, 
     lead["t0_bjd_tdb"] = core.bjd(lead["t0"])
     lead["summary"] = (f"Signal {lead['lead_id']} (lead_id). TIC {lead['tic']}, {kind}{tm}, Sector {lead['sector']}. BLS: depth {lead['depth_ppm']:.0f} ppm, "
                        f"P = {lead['period_d']:.4f} d, S/N {lead['search_snr']:.1f}.{size} {origin}")
+    lead["display"] = R.line(f"SIGNAL {lead['lead_id']}", f"TIC {lead['tic']}", f"Sector {lead['sector']}", f"P = {lead['period_d']:.4f} d",
+                             f"{R.num(lead['depth_ppm'])} ppm", "practice" if lead.get("practice") else (f"found by {lead['found_by']}" if lead.get("found_by") else None),
+                             "unvetted")
     lead["available"] = _lead_call(leads.available, hunter_id)
     lead["next_actions"] = [core.act("catalog_check", "prior claims on this star", tic=lead["tic"]),
                             core.act("vet_signal", "false-positive tests", tic=lead["tic"], sector=lead["sector"], **sig),
@@ -331,11 +347,26 @@ async def next_lead(hunter_id: str, ctx: Context, star_type: str | None = None, 
     return lead
 
 
+def _same_signal(period, ref):
+    """True when two periods describe the same signal: within 1%, allowing half and double."""
+    try:
+        return any(abs(float(period) / float(ref) - k) < 0.01 * k for k in (0.5, 1.0, 2.0))
+    except Exception:
+        return False
+
+
 def _auto_status(lead):
-    """The server's own reading of a lead, from its cached results for exactly the lead's values. None if the tests have not been run."""
+    """The server's own reading of a lead, from cached results for this signal. Exact arguments are preferred; otherwise any vetting and
+    finished follow-up of the same star at the same period (within 1%) counts. None if the tests have not been run."""
     a = {"tic": lead["tic"], "sector": lead["sector"], "period_d": lead["period_d"], "t0": lead["t0"], "duration_h": lead["duration_h"]}
     vet = store.cache_get("vet_signal", store.key("vet_signal", a))
     fol = store.cache_get("followup", store.key("followup", _followup_args(lead["tic"], lead["period_d"], lead["t0"], lead["duration_h"], lead["depth_ppm"])))
+    if vet is None:
+        near = store.cache_find("vet_signal", lambda r: r.get("tic") == lead["tic"] and _same_signal(r.get("period_d"), lead["period_d"]))
+        vet = (near[0], None) if near else None
+    if fol is None:
+        near = store.cache_find("followup", lambda r: r.get("tic") == lead["tic"] and _same_signal((r.get("input") or {}).get("period_d"), lead["period_d"]))
+        fol = (near[0], None) if near else None
     if vet is None or fol is None:
         return None, vet is not None, fol is not None
     v, f = vet[0], fol[0]
@@ -387,6 +418,16 @@ async def submit_vet(hunter_id: str, lead_id: int, verdict: str, reason: str, ct
            "server_reading": auto, **info, "summary": summary,
            "handle_tally": me, "board": {k: bd[k] for k in ("leads_total", "leads_open", "leads_cleared", "leads_surviving")},
            "next_actions": [core.act("next_lead", "next unvetted lead", hunter_id=hunter_id)]}
+    state = {"surviving": "listed as a planet candidate", "cleared": "closed", "open": "open, awaiting another vetting"}[status]
+    out["display"] = R.line("VERDICT", f"signal {int(lead_id)} recorded as {wording.split(':')[0]}" + (f" ({code})" if code else ""), state, f"server reading: {auto}")
+    if status == "surviving":
+        full = leads.get(lead_id); who = [x for x in leads.board()["surviving"] if x["lead_id"] == int(lead_id)]
+        rp = f"Rp = {full['radius_earth_if_planet']:.1f} R_Earth" if full.get("radius_earth_if_planet") else None
+        out["display"] += "\n" + R.block(f"PLANET CANDIDATE LISTED \u00b7 TIC {full['tic']}",
+                                         R.join(f"P = {full['period_d']:.6f} d", f"depth {R.num(full['depth_ppm'])} ppm", rp),
+                                         R.join(f"identified by {full['found_by']}" if full.get("found_by") else None,
+                                                "vetted by " + ", ".join(who[0]["vetted_by"]) if who else None),
+                                         "unconfirmed: confirmation requires follow-up observations")
     store.trace(sid, "submit_vet", {"tic": lead["tic"], "lead_id": int(lead_id), "verdict": verdict, "hold": bool(hold), "deciding_test": deciding_test,
                                     "reason": reason[:600], "auto_status": auto, "tools_seen": store.seen(sid, lead["tic"])},
                 {"lead_status": status}, 0, False)
@@ -448,7 +489,8 @@ def _map_detector(sector, camera, ccd, pop="red"):
             lim = sky.POPULATIONS[pop]
             exclude = set(open(EXCLUDE_FILE).read().split()) if os.path.exists(EXCLUDE_FILE) else set()
             stars = select_detector(sector, camera, ccd, os.path.join(store.DATA, "catalog"), exclude=exclude,
-                                    tmag=lim["tmag"], teff=lim["teff"], rad_max=lim["rad_max"])
+                                    tmag=lim["tmag"], teff=lim["teff"], rad_max=lim["rad_max"],
+                                    log=lambda m: sky.set_map_progress(sector, camera, ccd, pop, m))
             sky.build_ccd(sector, camera, ccd, stars, pop)
         except Exception as e:
             sky.mark_ccd(sector, camera, ccd, f"failed: {type(e).__name__}: {str(e)[:120]}", pop)
@@ -490,9 +532,15 @@ async def sky_map(ctx: Context, sector: int | None = None) -> dict:
         nxt = _map_next()
         if nxt:
             out["detectors_being_mapped"] = [{"sector": nxt[0], "camera": nxt[1], "ccd": nxt[2], "star_type": "red"}]
+    mapping = sky.map_progress()
+    ready = R.join(*[f"{k} {v}" for k, v in out["unopened_by_star_type"].items() if v]) or "none"
+    out["display"] = "\n".join([R.line("SKY", f"{t['searched']} of {t['patches']} fields searched", f"{R.num(t['stars_searched'])} stars",
+                                       f"{t['leads_found']} signal{'s' if t['leads_found'] != 1 else ''}", f"ready: {ready}")] + [m["display"] for m in mapping])
+    if mapping:
+        out["keep_polling"] = t["unopened"] == 0
     if t["patches"] == 0:
         out["summary"] = "No fields mapped yet. The first detector is being mapped; fields are ready in about five minutes."
-        out["next_actions"] = []
+        out["next_actions"] = [core.act("sky_map", "REQUIRED now, in this same turn: mapping is still running")] if mapping else []
     else:
         out["summary"] = (f"{t['searched']} of {t['patches']} mapped fields searched ({t['stars_searched']} stars), {t['leads_found']} transit-like signal(s) identified, "
                           f"{t['unopened']} not yet searched, {t['in_progress']} in progress.")
@@ -516,17 +564,17 @@ async def open_patch(hunter_id: str, ctx: Context, patch_id: str | None = None, 
         return {"patch": None, "star_type": kind,
                 "summary": (f"No unopened {kind} patch. Mapping the next detector for {kind} stars; ready in about {'10-20' if kind == 'yellow' else '5-10'} minutes."
                             if nxt else "No unopened patches."),
-                "ready_now": sky.summary()["unopened_by_star_type"], "next_actions": []}
+                "ready_now": sky.summary()["unopened_by_star_type"],
+                "display": "\n".join(m["display"] for m in sky.map_progress() if m["pop"] == kind) or R.line("FIELD", f"no {kind} field ready"),
+                "keep_polling": bool(nxt),
+                "next_actions": ([core.act("open_patch", "REQUIRED in this same turn, after about a minute: mapping is still running", hunter_id=hunter_id, star_type=kind)]
+                                 if nxt else [])}
     cmd = f"{SWEEP_CMD} {p['id']} --hunter {hunter_id} --hub {_base_url(ctx)}"
     store.trace(_sid(ctx), "open_patch", {"patch_id": p["id"]}, {"patch_id": p["id"]}, 0, False)
     return {"patch_id": p["id"], "sector": p["sector"], "star_type": p["pop"], "stars": p["n_stars"], "held_minutes": int((p["claimed_until"] - time.time()) / 60),
             "command": cmd, "resumed": p["resumed"], "detectable": sky.POPULATIONS[p["pop"]]["finds"],
-            "display": "\n".join([f"KEPLER \u00b7 FIELD {p['id']}".ljust(54) + "CLAIMED".rjust(12), sky.RULE,
-                                  f" TARGETS  {p['n_stars']} {p['pop']} stars \u00b7 TESS Sector {p['sector']}, camera {p['camera']}, detector {p['ccd']} \u00b7 never searched",
-                                  f" METHOD   full-frame-image photometry \u00b7 box-least-squares transit search",
-                                  f" RUNS ON  this computer \u00b7 about {max(1, round(p['n_stars'] / 20))} min \u00b7 reads NASA MAST \u00b7 uplinks numbers only",
-                                  f" VERIFY   hub re-runs every flagged star before a signal is queued",
-                                  f" HOLD     {int((p['claimed_until'] - time.time()) / 60)} min", sky.RULE, " STATUS   launching search"]),
+            "display": R.line("FIELD", f"{p['id']} claimed", f"{p['n_stars']} {p['pop']} stars", f"Sector {p['sector']}",
+                              f"held {int((p['claimed_until'] - time.time()) / 60)} min"),
             "summary": (f"Field {p['id']} claimed: {p['n_stars']} unsearched {p['pop']} stars, Sector {p['sector']}. The assistant executes `command` with its shell tool "
                         "(background; about seven minutes; Python 3.11+). It reads public TESS images and uploads one row of numbers per star."),
             "procedure": ["The hub sends the list of target stars for this field.",
