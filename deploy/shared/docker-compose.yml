@@ -1,0 +1,27 @@
+# Kepler on a shared box (unify-dev): no Caddy. The existing nginx_proxy container terminates TLS and proxies
+# kepler.genexperiences.com to 172.17.0.1:8010. Tight limits: the box has 3.7 GB shared with other services.
+# Image: ghcr.io/khariha/kepler-mcp (linux/arm64; the box is Graviton). Never Docker Hub.
+services:
+  mcp:
+    image: ghcr.io/khariha/kepler-mcp:${KEPLER_TAG:-0.3.1}
+    container_name: kepler-mcp
+    restart: unless-stopped
+    ports: ["172.17.0.1:8010:8000"]   # docker bridge gateway only: reachable by nginx_proxy, not from outside
+    environment:
+      KEPLER_HOSTS: kepler.genexperiences.com
+      KEPLER_PUBLIC_URL: https://kepler.genexperiences.com
+      KEPLER_SALT: ${KEPLER_SALT}
+      KEPLER_EXCLUDE: /app/data/private_exclude.txt
+      KEPLER_LIGHT_PER_HOUR: "60"
+      KEPLER_HEAVY_PER_HOUR: "5"
+      KEPLER_CONCURRENCY: "2"
+      KEPLER_JOB_WORKERS: "1"
+      KEPLER_TIMEOUT_S: "85"
+      KEPLER_FETCH_TIMEOUT: "180"
+      KEPLER_NET_TIMEOUT: "60"
+    volumes:
+      - mcpdata:/app/data
+    mem_limit: 1500m
+    memswap_limit: 2000m
+volumes:
+  mcpdata:
