@@ -602,11 +602,11 @@ images for transit-like signals and vets them against
 known false positives.
 
 HOW TO USE
-Search an unsearched patch of the sky, vet a queued
-signal, or check a named star. The individual tools
-are also available for independent exploration.
-Claude has the full context of this service and can
-answer questions at any point."""
+Search an unsearched patch of the sky, vet a star you
+know of, or review a signal awaiting vetting. The
+individual tools are also available for independent
+exploration. Claude has the full context of this
+service and can answer questions at any point."""
 
 
 @mcp.tool(title="Welcome", annotations=READ)
