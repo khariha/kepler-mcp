@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kepler field search</title>
 <style>
-  /* Idiom: engineering datasheet, as on the Kepler board (square, ruled, dot screens, mono numerals), in light and dark. */
+  /* Idiom: engineering datasheet, as on the Kepler board (square, ruled, dot screens, mono numerals), in light and dark.
+     Layout A: fits the window. Status | current star over the stars searched | log, each column scrolling on its own. */
   :root { --page: #eee; --bg: #fff; --fg: #000; --mute: #555; --line: #bfbfbf; --rule: #000; --frame: #888; --shadow: #ccc; --dot: #bbb;
           --accent: #002dce; --good: #00794c; --bad: #e7040f; --amber: #ffb700; }
   @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
@@ -14,71 +15,104 @@
   :root[data-theme="dark"] { --page: #000; --bg: #111; --fg: #eee; --mute: #999; --line: #333; --rule: #eee; --frame: #444; --shadow: #000; --dot: #444;
           --accent: #4d7dff; --good: #2fbf86; --bad: #ff4a3d; }
   * { box-sizing: border-box; }
-  html { background: var(--page); }
-  body { background: var(--page); color: var(--fg); margin: 0; padding: 2rem 1rem; font: 14px/1.5 "Inter Tight", "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif; }
-  main { max-width: 760px; margin: 0 auto; background: var(--bg); border: 1px solid var(--frame); box-shadow: 2px 2px var(--shadow); padding: 1rem 1.2rem; }
-  pre, .mono, .cap, .stat { font-family: "JetBrains Mono", "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
-  .app { padding: 0; } .app main { max-width: none; border: none; box-shadow: none; padding: .6rem; }
-  .head { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; }
-  .head span { color: var(--mute); }
-  h1, h2 { font-size: 1rem; font-weight: 700; line-height: 1.2; margin: 0; }
+  html, body { height: 100%; margin: 0; overflow: hidden; background: var(--page); }
+  body { color: var(--fg); padding: 12px; font: 13px/1.45 "Inter Tight", "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif; }
+  pre, .mono, .cap, .stats { font-family: "JetBrains Mono", "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+  main { height: 100%; background: var(--bg); border: 1px solid var(--frame); box-shadow: 2px 2px var(--shadow); padding: 12px 14px; display: grid; gap: 14px;
+         grid-template-columns: minmax(220px, 1fr) minmax(0, 2.4fr) minmax(260px, 1.2fr); grid-template-rows: 100%; }
+  main > * { min-width: 0; min-height: 0; }
+  .panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  h1, h2 { font-size: 13px; font-weight: 700; line-height: 1.2; margin: 0; }
   h1 { letter-spacing: .04em; text-transform: uppercase; }
-  .colorbar { display: flex; height: .5rem; margin: .5rem 0 1.5rem; } .colorbar i { flex: 1; }
-  hr.dots { height: 1rem; border: none; margin: .25rem 0 .75rem; background: radial-gradient(var(--mute) .5px, transparent 1px) 0 0/3px 3px; }
-  .app .head, .app .colorbar, .app .note { display: none; }
-  .read { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: .4rem; }
-  .read b { font-size: 1.6rem; line-height: 1.6rem; }
-  .bar { height: 1.6rem; border: .1rem solid var(--rule); box-shadow: 2px 2px var(--shadow); margin: 0 0 1.5rem;
+  .head span { display: block; color: var(--mute); font-size: 12px; margin-top: 2px; }
+  .colorbar { display: flex; height: 6px; margin: 6px 0 14px; flex: none; } .colorbar i { flex: 1; }
+  hr.dots { height: 10px; border: none; margin: 3px 0 8px; flex: none; background: radial-gradient(var(--mute) .5px, transparent 1px) 0 0/3px 3px; }
+  .read b { font-size: 26px; line-height: 30px; }
+  .bar { height: 22px; flex: none; border: .1rem solid var(--rule); box-shadow: 2px 2px var(--shadow); margin: 4px 0 12px;
          background: radial-gradient(var(--dot) .5px, transparent 1px) 0 0/3px 3px; }
   .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
-  pre { border: .1rem solid var(--line); padding: .6rem .8rem; white-space: pre-wrap; word-break: break-word; margin: 0 0 1rem; font-size: 12px; line-height: 1.55; }
-  .note { color: var(--mute); margin: 0; font-size: 13px; } .note b { color: var(--fg); }
-  .done { color: var(--good); } .err { color: var(--bad); }
-  .card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: .7rem; margin: 0 0 .4rem; }
-  .card canvas { width: 100%; border: .1rem solid var(--rule); box-shadow: 2px 2px var(--shadow); display: block; background: #000; }
-  .card canvas.fold { background: var(--bg); }
-  .cap { color: var(--mute); margin: .4rem 0 1.5rem; min-height: 1.55em; font-size: 12px; }
+  .stats { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 12px; margin: 0; }
+  .stats dt { color: var(--mute); } .stats dd { margin: 0; text-align: right; }
+  .note { color: var(--mute); margin: 0; font-size: 12px; } .note b { color: var(--fg); }
+  .grow { flex: 1; min-height: 12px; }
+  .star { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto minmax(60px, .45fr); }
+  .pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 10px; min-height: 0; }
+  .pair .frame:first-child { aspect-ratio: 1; width: 100%; max-height: 100%; justify-self: start; align-self: start; }
+  .frame { position: relative; border: .1rem solid var(--rule); box-shadow: 2px 2px var(--shadow); background: #000; min-width: 0; min-height: 0; }
+  .frame.fold { background: var(--bg); }
+  .frame canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .cap { color: var(--mute); margin: 6px 0 12px; min-height: 1.45em; font-size: 12px; }
   .cap b { color: var(--fg); font-weight: 700; } .cap .sig { color: var(--accent); font-weight: 700; }
-  .thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(38px, 1fr)); gap: 3px; margin: 0 0 1.5rem; min-height: 1rem; }
+  .thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 3px; overflow: auto; align-content: start; min-height: 0; }
   .thumbs canvas { width: 100%; aspect-ratio: 1; display: block; border: 2px solid transparent; cursor: pointer; image-rendering: pixelated; }
   .thumbs canvas.sig { border-color: var(--amber); }
   .thumbs canvas.on { outline: 1px solid var(--fg); }
-  @media (max-width: 520px) { body { padding: 0; } main { border: none; box-shadow: none; } .card { grid-template-columns: 1fr; } }
+  pre { flex: 1; min-height: 0; overflow: auto; margin: 0; border: .1rem solid var(--line); padding: 8px 10px; white-space: pre-wrap; word-break: break-word; font-size: 11.5px; line-height: 1.5; }
+  .done { color: var(--good); } .err { color: var(--bad); }
+  /* narrow windows and the chat panel: one column that scrolls */
+  @media (max-width: 860px) {
+    html, body { height: auto; overflow: auto; } body { padding: 0; }
+    main { height: auto; display: block; border: none; box-shadow: none; }
+    main > * + * { margin-top: 16px; } .star { display: block; } .pair { height: 220px; }
+    .thumbs { max-height: 160px; } pre { height: 260px; flex: none; } .grow { display: none; }
+  }
+  .app, .app body { height: auto; overflow: visible; } .app body { padding: 0; }
+  .app main { height: auto; display: block; border: none; box-shadow: none; padding: 8px; }
+  .app main > * + * { margin-top: 14px; } .app .star { display: block; } .app .pair { height: 200px; }
+  .app .thumbs { max-height: 120px; } .app pre { height: 200px; flex: none; } .app .head, .app .colorbar, .app .note, .app .grow { display: none; }
 </style>
 </head>
 <body>
 <main>
-  <div class="head"><h1>Kepler MCP · Field search</h1><span>Generative Experiences</span></div>
-  <div class="colorbar" aria-hidden="true"><i style="background:#000"></i><i style="background:#003f9b"></i><i style="background:#0092ff"></i><i style="background:#00c986"></i><i style="background:#ffb700"></i><i style="background:#ff4a03"></i><i style="background:#e7040f"></i></div>
-  <h2>1. Progress</h2><hr class="dots">
-  <div class="read"><b class="mono" id="pct">0%</b><span class="mono" id="pctnote">starting</span></div>
-  <div class="bar" role="progressbar" aria-label="Stars searched"><div id="bar"></div></div>
-  <h2>2. Current star</h2><hr class="dots">
-  <div class="card" id="card" hidden>
-    <canvas id="cut" width="300" height="300" aria-label="pixel cutout of the current star, aperture outlined"></canvas>
-    <canvas id="lc" class="fold" width="600" height="300" aria-label="light curve folded at the best period"></canvas>
-  </div>
-  <div class="cap" id="cap">waiting for the first star</div>
-  <h2>3. Stars searched</h2><hr class="dots">
-  <div class="thumbs" id="thumbs"></div>
-  <h2>4. Log</h2><hr class="dots">
-  <pre id="log">starting…</pre>
-  <p class="note">This tab searches about 150 stars on your computer: it reads their pixels from NASA's public TESS archive, looks for
-  repeating transit-like dips, and sends one row of numbers per star to Kepler. <b>Keep this tab open and visible until it says done.
-  Closing it pauses the search; open the link again to resume where it stopped.</b></p>
+  <section class="panel">
+    <div class="head"><h1>Kepler MCP · Field search</h1><span>Generative Experiences</span></div>
+    <div class="colorbar" aria-hidden="true"><i style="background:#000"></i><i style="background:#003f9b"></i><i style="background:#0092ff"></i><i style="background:#00c986"></i><i style="background:#ffb700"></i><i style="background:#ff4a03"></i><i style="background:#e7040f"></i></div>
+    <h2>1. Progress</h2><hr class="dots">
+    <div class="read"><b class="mono" id="pct">0%</b></div>
+    <div class="bar" role="progressbar" aria-label="Stars searched"><div id="bar"></div></div>
+    <dl class="stats" id="stats"><dt>status</dt><dd>starting</dd></dl>
+    <div class="grow"></div>
+    <p class="note">This tab searches about 150 stars on your computer: it reads their pixels from NASA's public TESS archive, looks for
+    repeating transit-like dips, and sends one row of numbers per star to Kepler. <b>Keep this tab open and visible until it says done.
+    Closing it pauses the search; open the link again to resume where it stopped.</b></p>
+  </section>
+  <section class="panel star">
+    <div><h2>2. Current star</h2><hr class="dots"></div>
+    <div class="pair">
+      <div class="frame"><canvas id="cut" aria-label="pixel cutout of the current star, aperture outlined"></canvas></div>
+      <div class="frame fold"><canvas id="lc" aria-label="light curve folded at the best period"></canvas></div>
+    </div>
+    <div class="cap" id="cap">waiting for the first star</div>
+    <div><h2>3. Stars searched</h2><hr class="dots"></div>
+    <div class="thumbs" id="thumbs"></div>
+  </section>
+  <section class="panel">
+    <h2>4. Log</h2><hr class="dots">
+    <pre id="log">starting…</pre>
+  </section>
 </main>
 <script>
 "use strict";
 const SEARCH_CORE = __SEARCH_CORE__;
 const PYODIDE = "https://cdn.jsdelivr.net/pyodide/v0.28.3/full/";
-const RUNNER = Math.random().toString(36).slice(2, 10);
+// One id per browser tab, kept across reloads (sessionStorage is per tab), so reloading resumes instead of looking like a second window.
+const RUNNER = (() => { try { let r = sessionStorage.getItem("kepler:runner"); if (!r) { r = Math.random().toString(36).slice(2, 10); sessionStorage.setItem("kepler:runner", r); } return r; }
+  catch { return Math.random().toString(36).slice(2, 10); } })();
 const logEl = document.getElementById("log"), barEl = document.getElementById("bar");
 const head = [], tail = [];
 const T0 = performance.now();
 const IN_FRAME = window.parent !== window;
 if (IN_FRAME) document.body.classList.add("app");
 
-function render() { logEl.textContent = head.concat(tail.slice(-8)).join("\n"); if (IN_FRAME) size(); }
+function render() {
+  const stick = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 6;
+  logEl.textContent = head.concat(tail).join("\n"); if (stick) logEl.scrollTop = logEl.scrollHeight; if (IN_FRAME) size();
+}
+const statRows = {};
+function stat(o) {
+  Object.assign(statRows, o);
+  document.getElementById("stats").innerHTML = Object.entries(statRows).map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+}
 function say(s) { head.push(s); render(); }
 function stream(s) { tail.push(s); render(); }
 function since(t) { return ((performance.now() - t) / 1000).toFixed(1) + " s"; }
@@ -134,14 +168,21 @@ function heat(v) {      // dark -> amber -> white, like a magma map
   const x = Math.max(0, Math.min(1, v)) * (s.length - 1), i = Math.min(Math.floor(x), s.length - 2), f = x - i;
   return `rgb(${s[i].map((c, k) => Math.round(c + (s[i + 1][k] - c) * f)).join(",")})`;
 }
+function fit(cv) {      // size the canvas buffer to its box, so drawings stay sharp at any window size
+  const d = devicePixelRatio || 1, w = Math.round((cv.clientWidth || cv.width) * d), h = Math.round((cv.clientHeight || cv.height) * d);
+  if (w && h && (cv.width !== w || cv.height !== h)) { cv.width = w; cv.height = h; }
+  return d;
+}
 function drawCut(cv, pv, outline = true) {
-  const g = cv.getContext("2d"), n = pv.img.length, W = cv.width, px = W / n;
-  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) { g.fillStyle = heat(pv.img[y][x]); g.fillRect(x * px, (n - 1 - y) * px, px + 0.5, px + 0.5); }
+  fit(cv);
+  const g = cv.getContext("2d"), n = pv.img.length, W = cv.width, H = cv.height, px = Math.min(W, H) / n, ox = (W - px * n) / 2, oy = (H - px * n) / 2;
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) { g.fillStyle = heat(pv.img[y][x]); g.fillRect(ox + x * px, oy + (n - 1 - y) * px, px + 0.5, px + 0.5); }
   if (!outline) return;
   g.strokeStyle = "#39d0ff"; g.lineWidth = Math.max(1.5, px / 8); g.beginPath();
   const A = (x, y) => y >= 0 && y < n && x >= 0 && x < n && pv.aper[y][x];
   for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (A(x, y)) {
-    const X = x * px, Y = (n - 1 - y) * px;
+    const X = ox + x * px, Y = oy + (n - 1 - y) * px;
     if (!A(x, y + 1)) { g.moveTo(X, Y); g.lineTo(X + px, Y); }
     if (!A(x, y - 1)) { g.moveTo(X, Y + px); g.lineTo(X + px, Y + px); }
     if (!A(x - 1, y)) { g.moveTo(X, Y); g.lineTo(X, Y + px); }
@@ -150,26 +191,26 @@ function drawCut(cv, pv, outline = true) {
   g.stroke();
 }
 function drawFold(cv, pv, r) {
-  const g = cv.getContext("2d"), W = cv.width, H = cv.height, L = 46, B = 30, T = 12, Rr = 10;
-  g.clearRect(0, 0, W, H); g.font = "13px ui-monospace, Menlo, monospace"; g.fillStyle = css("--mute");
+  const d = fit(cv), g = cv.getContext("2d"), W = cv.width, H = cv.height, L = 46 * d, B = 26 * d, T = 12 * d, Rr = 10 * d;
+  g.clearRect(0, 0, W, H); g.font = `${11 * d}px ui-monospace, Menlo, monospace`; g.fillStyle = css("--mute");
   if (!pv.bins || !pv.bins.length) { g.fillText(r.status === "ok" ? "no fold" : "no usable light curve", L, H / 2); return; }
   const ys = pv.bins.map(b => b[1]), spread = Math.max(...ys) - Math.min(...ys);
   const pad = Math.max(spread * 0.6, (r.noise_ppm || 500) / 1e6 * 1.5);
   const lo = Math.min(...ys) - pad, hi = Math.max(...ys) + pad, w = pv.win;
   const X = x => L + (x + w) / (2 * w) * (W - L - Rr), Y = y => T + (hi - y) / (hi - lo) * (H - T - B);
-  g.strokeStyle = css("--line"); g.lineWidth = 1; g.beginPath(); g.moveTo(X(0), T); g.lineTo(X(0), H - B); g.moveTo(L, Y(1)); g.lineTo(W - Rr, Y(1)); g.stroke();
+  g.strokeStyle = css("--line"); g.lineWidth = d; g.beginPath(); g.moveTo(X(0), T); g.lineTo(X(0), H - B); g.moveTo(L, Y(1)); g.lineTo(W - Rr, Y(1)); g.stroke();
   g.fillStyle = css("--mute"); g.globalAlpha = 0.45;
-  for (const [x, y] of pv.pts) if (y > lo && y < hi) g.fillRect(X(x) - 1.5, Y(y) - 1.5, 3, 3);
-  g.globalAlpha = 1; g.strokeStyle = css("--accent"); g.lineWidth = 2.5; g.beginPath();
+  for (const [x, y] of pv.pts) if (y > lo && y < hi) g.fillRect(X(x) - 1.5 * d, Y(y) - 1.5 * d, 3 * d, 3 * d);
+  g.globalAlpha = 1; g.strokeStyle = css("--accent"); g.lineWidth = 2.5 * d; g.beginPath();
   pv.bins.forEach(([x, y], i) => i ? g.lineTo(X(x), Y(y)) : g.moveTo(X(x), Y(y))); g.stroke();
   g.fillStyle = css("--mute");
-  g.fillText(`${(-w).toFixed(0)} h`, L, H - 10); g.fillText("0", X(0) - 4, H - 10); g.fillText(`+${w.toFixed(0)} h`, W - Rr - 40, H - 10);
-  g.fillText(`${((hi - 1) * 1e6).toFixed(0)}`, 4, T + 10); g.fillText(`${((lo - 1) * 1e6).toFixed(0)}`, 4, H - B);
-  g.fillText("ppm", 4, (T + H - B) / 2);
+  g.fillText(`${(-w).toFixed(0)} h`, L, H - 8 * d); g.fillText("0", X(0) - 3 * d, H - 8 * d); g.fillText(`+${w.toFixed(0)} h`, W - Rr - 34 * d, H - 8 * d);
+  g.fillText(`${((hi - 1) * 1e6).toFixed(0)}`, 4 * d, T + 9 * d); g.fillText(`${((lo - 1) * 1e6).toFixed(0)}`, 4 * d, H - B);
+  g.fillText("ppm", 4 * d, (T + H - B) / 2);
 }
 const recent = [];
 function showStar(item) {
-  const { r, pv } = item; document.getElementById("card").hidden = false;
+  const { r, pv } = item; shown = item;
   drawCut(document.getElementById("cut"), pv); drawFold(document.getElementById("lc"), pv, r);
   const sig = looksLikeSignal(r);
   document.getElementById("cap").innerHTML = r.status === "ok"
@@ -181,7 +222,7 @@ function showStar(item) {
 }
 function addThumb(r, pv) {
   const item = { r, pv }; recent.push(item);
-  const c = document.createElement("canvas"); c.width = c.height = pv.img.length * 4; c._item = item;
+  const c = document.createElement("canvas"); c.width = c.height = 60; c._item = item;
   c.title = `TIC ${r.tic}` + (r.status === "ok" ? ` · P ${r.period_d.toFixed(2)} d · S/N ${r.snr.toFixed(1)}` : "");
   if (looksLikeSignal(r)) c.classList.add("sig");
   drawCut(c, pv, false); c.onclick = () => { pinnedUntil = performance.now() + 12000; showStar(item); };   // look at one for 12 s, then follow again
@@ -190,7 +231,8 @@ function addThumb(r, pv) {
   while (recent.length > 48) recent.shift();
   if (performance.now() > pinnedUntil) showStar(item);
 }
-let pinnedUntil = 0;
+let pinnedUntil = 0, shown = null;
+addEventListener("resize", () => { if (shown) showStar(shown); });
 
 function saved(pid) { try { return JSON.parse(localStorage.getItem("kepler:" + pid) || "{}"); } catch { return {}; } }
 function save(pid, rows) { try { localStorage.setItem("kepler:" + pid, JSON.stringify(rows)); } catch {} }
@@ -204,13 +246,14 @@ async function main() {
   const P = await hub(base, `/patch/${pid}?hunter=${encodeURIComponent(hunter)}`);
   const stars = P.stars, sector = P.sector, total = stars.length;
   say(`KEPLER  field ${pid} · TESS Sector ${sector} · camera ${P.camera} CCD ${P.ccd} · ${total} stars`);
+  stat({ status: "loading", field: pid, sector: `${sector} · cam ${P.camera} · ccd ${P.ccd}`, stars: `0 / ${total}`, signals: 0 });
   const rows = saved(pid);
   const todo = stars.filter(s => !rows[s.tic]);
   if (total - todo.length) {
     say(`RESUME  ${total - todo.length} stars already searched in this browser`);
     const k = total - todo.length; barEl.style.width = (100 * k / total).toFixed(1) + "%";
     document.getElementById("pct").textContent = Math.floor(100 * k / total) + "%";
-    document.getElementById("pctnote").textContent = `${k}/${total} stars · resumed`;
+    stat({ stars: `${k} / ${total}` });
   }
   const beat = (extra = {}) => hub(base, `/patch/${pid}/progress`, { hunter, runner: RUNNER, done: Object.keys(rows).length, total,
     signals: Object.values(rows).filter(looksLikeSignal).length, ...extra });
@@ -281,7 +324,7 @@ json.dumps(S.patch_row(json.loads(${JSON.stringify(JSON.stringify(s))}), times, 
     const left = (performance.now() - tStart) / (i + 1) * (todo.length - i - 1);
     barEl.style.width = (100 * n / total).toFixed(1) + "%";
     document.getElementById("pct").textContent = Math.floor(100 * n / total) + "%";
-    document.getElementById("pctnote").textContent = `${n}/${total} stars · ${nsig} signal${nsig === 1 ? "" : "s"} · about ${mmss(left)} left`;
+    stat({ status: "searching", stars: `${n} / ${total}`, signals: nsig, read: `${(bytes / 1e6).toFixed(0)} MB`, left: `about ${mmss(left)}` });
     head[head.length - 1].startsWith("SEARCH") ? head.pop() : null;
     head.push(`SEARCH  ${n}/${total} stars · ${nsig} signal${nsig === 1 ? "" : "s"} · ${(bytes / 1e6).toFixed(0)} MB read · about ${mmss(left)} left`); render();
     if (looksLikeSignal(r)) {
@@ -295,14 +338,16 @@ json.dumps(S.patch_row(json.loads(${JSON.stringify(JSON.stringify(s))}), times, 
   }
   const all = Object.values(rows), ok = all.filter(r => r.status === "ok").length;
   if (all.length < 0.9 * total) throw new Error(`${all.length} of ${total} stars searched; nothing uploaded. Reload to resume.`);
+  stat({ status: "uploading" });
   say(`UPLOAD  ${all.length} rows (${ok} usable light curves) · one row of numbers per star`);
   const res = await hub(base, `/patch/${pid}/results`, { hunter, rows: all });
+  stat({ status: "verifying" });
   say(`VERIFY  Kepler is re-running ${res.signals_flagged || 0} flagged star(s)`);
   let fin = { status: "verifying" };
   for (let k = 0; k < 90 && fin.status === "verifying"; k++) { await new Promise(z => setTimeout(z, 4000)); fin = await hub(base, `/patch/${pid}/status`); }
   forget(pid);
   barEl.style.width = "100%"; document.getElementById("pct").textContent = "100%";
-  document.getElementById("pctnote").textContent = fin.status === "done" ? "done" : (fin.status || "");
+  stat({ status: fin.status === "done" ? "done" : (fin.status || "?"), left: "0:00" });
   if (fin.status === "done") {
     const n = fin.n_leads || 0;
     say(n ? `DONE    ${n} transit-like signal(s) verified and queued for vetting · ${mmss(performance.now() - T0)}`
@@ -311,7 +356,7 @@ json.dumps(S.patch_row(json.loads(${JSON.stringify(JSON.stringify(s))}), times, 
     if (!IN_FRAME) say("        You can close this tab.");
   } else say(`STATUS  ${fin.note || fin.status}`);
 }
-main().catch(e => { say(`STOPPED ${e.message || e}`); logEl.classList.add("err"); console.error(e); });
+main().catch(e => { stat({ status: "stopped" }); say(`STOPPED ${e.message || e}`); logEl.classList.add("err"); console.error(e); });
 </script>
 </body>
 </html>
