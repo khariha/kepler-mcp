@@ -595,7 +595,7 @@ def _verify_patch(pid, hunter_handle, flagged, quiet_tic):
 
 
 # ---------------- welcome ----------------
-WELCOME = """KEPLER TRANSIT SURVEY
+WELCOME = """KEPLER MCP BY GENERATIVE EXPERIENCES
 
 Welcome. This service searches NASA TESS full-frame
 images for transit-like signals and vets them against

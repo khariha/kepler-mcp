@@ -387,7 +387,7 @@ def test_register_is_instrument_not_tour_guide():
     tools, prompts = anyio.run(go)
     names = {t.name for t in tools}
     assert "start" not in {p.name for p in prompts} and "lesson" in names
-    assert server.WELCOME.startswith("KEPLER TRANSIT SURVEY") and "HOW TO USE" in server.WELCOME and "!" not in server.WELCOME
+    assert server.WELCOME.startswith("KEPLER MCP BY GENERATIVE EXPERIENCES") and "HOW TO USE" in server.WELCOME and "!" not in server.WELCOME
     texts = {"instructions": server.INSTRUCTIONS}
     for t in tools:
         if t.name not in ("lesson", "welcome"):                  # the lesson keeps its teaching voice; the welcome notice is its own test
