@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.environ.get("KEPLER_DATA", os.path.join(ROOT, "data", "mcp"))
-VERSION = "5"   # bump to invalidate cached results when the science changes
+VERSION = "6"   # bump to invalidate cached results when the science changes
 
 
 def clean(o, sig=12):
