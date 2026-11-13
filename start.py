@@ -36,13 +36,13 @@ def main():
 
     os.chdir(ROOT)
     sys.path.insert(0, ROOT)
-    os.environ.setdefault("TESSHUNT_MCP_DATA", os.path.join(ROOT, "data", "mcp"))
+    os.environ.setdefault("KEPLER_DATA", os.path.join(ROOT, "data", "mcp"))
     # when run from a checkout, the helper is started with this interpreter from this folder
     os.environ.setdefault("KEPLER_SWEEP_CMD", f'cd "{ROOT}" && "{sys.executable}" -W ignore -m kepler_sweep')
     os.environ.setdefault("MPLBACKEND", "Agg")
     os.environ.setdefault("PYTHONWARNINGS", "ignore")
     warnings.filterwarnings("ignore")
-    os.makedirs(os.environ["TESSHUNT_MCP_DATA"], exist_ok=True)
+    os.makedirs(os.environ["KEPLER_DATA"], exist_ok=True)
 
     if not args.stdio:
         with socket.socket() as s:
@@ -50,7 +50,7 @@ def main():
                 sys.exit(f"Port {args.port} is already in use. Stop the other server or run: python start.py --port {args.port + 1}")
         url = f"http://{args.host}:{args.port}/mcp"
         say(f"Kepler MCP server starting at {url}")
-        say(f"  cache and logs: {os.environ['TESSHUNT_MCP_DATA']}")
+        say(f"  cache and logs: {os.environ['KEPLER_DATA']}")
         say(f"  connect Claude Code (once):  claude mcp add --transport http kepler {url}")
         say('  then ask:  "Use Kepler to check Pi Mensae"  |  "give me a lead to vet"  |  "search some new sky"')
         say("  stop with Ctrl-C")
@@ -61,7 +61,7 @@ def main():
         say(f"  board: http://{args.host}:{args.port}/board")
         say("  sky: hunters open patches of sectors " + os.environ.get("KEPLER_OPEN_SECTORS", "7 8") + " and search them with kepler-sweep on their own computer\n")
     sys.argv = ["kepler-mcp"] + (["--stdio"] if args.stdio else ["--host", args.host, "--port", str(args.port)]) + (["--leads", leads_file] if leads_file else [])
-    from tesshunt_mcp.server import main as serve
+    from kepler_mcp.server import main as serve
     try:
         serve()
     except KeyboardInterrupt:

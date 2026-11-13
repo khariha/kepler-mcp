@@ -5,7 +5,7 @@ hunters call it a candidate AND the server's own test results agree, so a carele
 """
 import hashlib, json, os, re, secrets, sqlite3, threading, time
 
-from tesshunt_mcp import store
+from kepler_mcp import store
 
 CLAIM_SECONDS = 30 * 60
 MAX_VETS = 3            # a lead nobody can agree on is retired after this many vets

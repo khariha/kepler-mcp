@@ -3,9 +3,9 @@
     tesshunt-mcp                 # streamable HTTP on 0.0.0.0:8000/mcp (hosted)
     tesshunt-mcp --stdio         # local, for Claude Code / Claude Desktop
 
-Env: TESSHUNT_MCP_DATA (cache + traces dir), TESSHUNT_MCP_HOSTS (comma-separated allowed Host headers, or *),
-     TESSHUNT_MCP_LIGHT_PER_HOUR, TESSHUNT_MCP_HEAVY_PER_HOUR, TESSHUNT_MCP_TIMEOUT_S, TESSHUNT_MCP_CONCURRENCY,
-     TESSHUNT_MCP_TRACES=0 to turn the trace log off, TESSHUNT_MCP_SALT.
+Env: KEPLER_DATA (cache + traces dir), KEPLER_HOSTS (comma-separated allowed Host headers, or *),
+     KEPLER_LIGHT_PER_HOUR, KEPLER_HEAVY_PER_HOUR, KEPLER_TIMEOUT_S, KEPLER_CONCURRENCY,
+     KEPLER_TRACES=0 to turn the trace log off, KEPLER_SALT.
 """
 import argparse, os, re, sys, time, warnings
 import anyio
@@ -14,13 +14,13 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
-from tesshunt_mcp import core, leads, sky, store
+from kepler_mcp import core, leads, sky, store
 
 warnings.filterwarnings("ignore")
 # Every tool only reads public archives and computes; nothing is created, changed or sent on the caller's behalf.
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 NOTE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
-TIMEOUT = float(os.environ.get("TESSHUNT_MCP_TIMEOUT_S", 120))
+TIMEOUT = float(os.environ.get("KEPLER_TIMEOUT_S", 120))
 _slots = None   # created inside the event loop
 
 INSTRUCTIONS = """Kepler: transit search and vetting on NASA TESS full-frame images. Finds and tests planet candidates. Named for Johannes Kepler; the data is TESS.
@@ -72,7 +72,7 @@ async def _run(tool, cls, ctx, args, fn, cacheable=True):
     """Rate limit, cache, run in a worker thread with a timeout, trace. Returns MCP content."""
     global _slots
     if _slots is None:
-        _slots = anyio.Semaphore(int(os.environ.get("TESSHUNT_MCP_CONCURRENCY", 4)))
+        _slots = anyio.Semaphore(int(os.environ.get("KEPLER_CONCURRENCY", 4)))
     headers = dict(ctx.headers) if (ctx is not None and ctx.headers) else {}
     sid = store.session_id(headers)
     t0 = time.time()
@@ -827,7 +827,16 @@ def main():
     if args.stdio:
         mcp.run("stdio")
         return
-    hosts = [h.strip() for h in os.environ.get("TESSHUNT_MCP_HOSTS", "").split(",") if h.strip()]
+    import signal, threading
+
+    def _stop(signum, frame):
+        """Exit within three seconds of Ctrl-C or TERM. Left to itself the server waits on open client connections and
+        background threads, and stopped servers piled up as hung processes."""
+        threading.Timer(3.0, lambda: os._exit(0)).start()
+        raise KeyboardInterrupt
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, _stop)
+    hosts = [h.strip() for h in os.environ.get("KEPLER_HOSTS", "").split(",") if h.strip()]
     if "*" in hosts:
         sec = TransportSecuritySettings(enable_dns_rebinding_protection=False)
     else:

@@ -4,17 +4,17 @@ MCP server for finding and vetting transiting planet candidates in TESS full-fra
 
 ## Layout
 - tesshunt/          science library: pipeline.py (clean, flatten, search, vet, centroid), sweep_core.py (pixel fetch, candidate_bar), cubes.py (pixel cache), vetting.py (catalogues, neighbours, verdict), followup.py (multi-sector recovery), star.py (TIC lookup)
-- tesshunt_mcp/      core.py (tools as plain functions), store.py (cache, traces, rate limits, jobs), server.py (MCP wiring), guide.md (vetting guide served to clients)
-- tesshunt_mcp/leads.py  the leads queue and public board (SQLite); ops/ holds leads files (dev_leads.jsonl = known stars for testing)
+- kepler_mcp/      core.py (tools as plain functions), store.py (cache, traces, rate limits, jobs), server.py (MCP wiring), guide.md (vetting guide served to clients)
+- kepler_mcp/leads.py  the leads queue and public board (SQLite); ops/ holds leads files (dev_leads.jsonl = known stars for testing)
 - tests/             offline tests; scripts/warm.py is the live smoke test
-- tesshunt_mcp/sky.py  patches of sky: mapping, claims, uploads; tesshunt/targets.py picks a detector's unclaimed stars
+- kepler_mcp/sky.py  patches of sky: mapping, claims, uploads; tesshunt/targets.py picks a detector's unclaimed stars
 - kepler_sweep/      the local helper hunters run to search a patch (command and --mcp modes); worker.py is the per-star search
 - start.py           one-command local launcher
 - deploy/            Docker + Caddy runbook
 
 ## Rules
 - Output says "planet candidate", never "planet" or "discovered".
-- Vocabulary: AAS-journal and TESS follow-up usage (see the Terminology table in tesshunt_mcp/guide.md). Epochs also in BJD_TDB. No "discovered", "confirmed", "validated"; no TOI numbers; disposition codes are ours, not TFOPWG's.
+- Vocabulary: AAS-journal and TESS follow-up usage (see the Terminology table in kepler_mcp/guide.md). Epochs also in BJD_TDB. No "discovered", "confirmed", "validated"; no TOI numbers; disposition codes are ours, not TFOPWG's.
 - Readouts: `display` blocks are plain text printed verbatim by the client. The session opens with the fixed welcome notice (server.WELCOME); do not dress it up.
 - Voice: instrument. Tool output is terse and neutral: no greetings, encouragement, second person, or coaching. The `lesson` tool is the one exception.
 - Result contract: every result has `summary` (neutral, one or two sentences), `next_actions` (list of {tool, args, why} built with core.act, arguments complete), and `caveats`. No prose instructions to the model inside results.

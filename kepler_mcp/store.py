@@ -3,7 +3,7 @@ import collections, hashlib, json, math, os, threading, time
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA = os.environ.get("TESSHUNT_MCP_DATA", os.path.join(ROOT, "data", "mcp"))
+DATA = os.environ.get("KEPLER_DATA", os.path.join(ROOT, "data", "mcp"))
 VERSION = "5"   # bump to invalidate cached results when the science changes
 
 
@@ -70,12 +70,12 @@ def session_id(headers):
     """Anonymous, non-reversible, rotates daily. The address itself is never written anywhere."""
     h = headers or {}
     ip = (h.get("x-forwarded-for") or h.get("x-real-ip") or "local").split(",")[0].strip()
-    salt = os.environ.get("TESSHUNT_MCP_SALT", "tess-hunt") + time.strftime("%Y-%m-%d", time.gmtime())
+    salt = os.environ.get("KEPLER_SALT", "kepler") + time.strftime("%Y-%m-%d", time.gmtime())
     return hashlib.sha256((salt + ip + h.get("user-agent", "")).encode()).hexdigest()[:12]
 
 
 def trace(sid, tool, args, result, seconds, cached, error=None):
-    if os.environ.get("TESSHUNT_MCP_TRACES", "1") == "0":
+    if os.environ.get("KEPLER_TRACES", "1") == "0":
         return
     d = os.path.join(DATA, "traces")
     os.makedirs(d, exist_ok=True)
@@ -95,8 +95,8 @@ def trace(sid, tool, args, result, seconds, cached, error=None):
 
 
 # ---------------- rate limit ----------------
-LIMITS = {"light": int(os.environ.get("TESSHUNT_MCP_LIGHT_PER_HOUR", 60)),
-          "heavy": int(os.environ.get("TESSHUNT_MCP_HEAVY_PER_HOUR", 5))}
+LIMITS = {"light": int(os.environ.get("KEPLER_LIGHT_PER_HOUR", 60)),
+          "heavy": int(os.environ.get("KEPLER_HEAVY_PER_HOUR", 5))}
 _hits = collections.defaultdict(collections.deque)
 _hit_lock = threading.Lock()
 
@@ -115,7 +115,7 @@ def allow(sid, cls, now=None):
 
 
 # ---------------- jobs ----------------
-_pool = ThreadPoolExecutor(max_workers=int(os.environ.get("TESSHUNT_MCP_JOB_WORKERS", 2)), thread_name_prefix="job")
+_pool = ThreadPoolExecutor(max_workers=int(os.environ.get("KEPLER_JOB_WORKERS", 2)), thread_name_prefix="job")
 _jobs = {}
 _job_lock = threading.Lock()
 

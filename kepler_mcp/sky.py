@@ -7,7 +7,7 @@ the re-check are passed in, so this module can be tested offline.
 """
 import json, math, os, random, sqlite3, threading, time
 
-from tesshunt_mcp import leads, store
+from kepler_mcp import leads, store
 
 PATCH_SIZE = int(os.environ.get("KEPLER_PATCH_SIZE", 150))     # measured: a laptop sweeps ~22 stars a minute
 CLAIM_SECONDS = 2 * 3600

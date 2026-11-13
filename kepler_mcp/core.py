@@ -5,7 +5,7 @@ import numpy as np
 from tesshunt import pipeline as P
 from tesshunt import cubes
 from tesshunt.sweep_core import _central_aperture, candidate_bar
-from tesshunt_mcp import store
+from kepler_mcp import store
 from tesshunt.star import position_at
 
 BRIGHT_TMAG = 9.0   # brighter than this the star's light spills past a 15-pixel cutout
@@ -31,7 +31,7 @@ def _build_flat(tpf, threshold):
     low = f < 1 - 5 * np.nanstd(f)
     isolated = low & ~np.roll(low, 1) & ~np.roll(low, -1)
     return flat[~isolated], aper, int(isolated.sum())
-MAX_FOLLOWUP_SECTORS = int(os.environ.get("TESSHUNT_MCP_MAX_SECTORS", 12))
+MAX_FOLLOWUP_SECTORS = int(os.environ.get("KEPLER_MAX_SECTORS", 12))
 TIME_NOTE = "t0 is BTJD = BJD_TDB - 2457000; fields ending _bjd_tdb are BJD_TDB"
 CANDIDATE_NOTE = "a signal that passes is a planet candidate; validation or confirmation requires follow-up observations"
 

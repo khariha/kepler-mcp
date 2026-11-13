@@ -70,7 +70,7 @@ Prompts: `hunt` (procedure for vetting leads), `check_star(star)` (procedure for
 
 **Readouts.** `welcome`, `open_patch` and `patch_status` return `display`: a short text block (the opening notice, a field card, live search progress with a bar and per-star lines) that the client prints verbatim. During a field search the helper reports progress to the hub, so the readout updates in the conversation.
 
-**Result contract.** Every result carries `summary` (what was measured or decided, one or two neutral sentences), `next_actions` (suggested calls as `{tool, args, why}` with complete arguments), and `caveats`. Resource `kepler://guide` is the vetting guide ([tesshunt_mcp/guide.md](tesshunt_mcp/guide.md)).
+**Result contract.** Every result carries `summary` (what was measured or decided, one or two neutral sentences), `next_actions` (suggested calls as `{tool, args, why}` with complete arguments), and `caveats`. Resource `kepler://guide` is the vetting guide ([kepler_mcp/guide.md](kepler_mcp/guide.md)).
 
 Units: times are BTJD (BJD - 2457000), depths ppm, durations hours, periods days.
 
@@ -94,7 +94,7 @@ Public archives only: TESS full-frame-image cubes and the TESS Input Catalog fro
 ## Running a public instance
 [deploy/README.md](deploy/README.md) has a one-box Docker and Caddy setup. A public instance rate-limits per user (60 ordinary calls and 5 follow-ups an hour by default) and caches results.
 
-**Logging.** By default the server appends tool name, arguments, numeric results, duration and an anonymous daily-rotating id to a local JSON-lines file. It stores no IP address, account, prompt or model reasoning. A hunter name, if someone picks one, is public on the board. Set `TESSHUNT_MCP_TRACES=0` to turn it off.
+**Logging.** By default the server appends tool name, arguments, numeric results, duration and an anonymous daily-rotating id to a local JSON-lines file. It stores no IP address, account, prompt or model reasoning. A hunter name, if someone picks one, is public on the board. Set `KEPLER_TRACES=0` to turn it off.
 
 ## Development
 ```bash

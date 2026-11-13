@@ -12,7 +12,7 @@ One small instance in **us-east-1**, the region that holds the MAST full-frame-i
 ```bash
 sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2 git
 git clone https://github.com/khariha/kepler-mcp.git && cd kepler-mcp/deploy
-printf 'MCP_DOMAIN=mcp.example.org\nTESSHUNT_MCP_SALT=%s\n' "$(openssl rand -hex 16)" > .env
+printf 'MCP_DOMAIN=mcp.example.org\nKEPLER_SALT=%s\n' "$(openssl rand -hex 16)" > .env
 sudo docker compose up -d --build
 curl https://mcp.example.org/health
 ```

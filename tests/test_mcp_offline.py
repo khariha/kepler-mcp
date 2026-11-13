@@ -6,7 +6,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def tmp_data(tmp_path, monkeypatch):
-    from tesshunt_mcp import store
+    from kepler_mcp import store
     monkeypatch.setattr(store, "DATA", str(tmp_path))
     store._hits.clear(); store._jobs.clear()
     return tmp_path
@@ -39,7 +39,7 @@ def test_candidate_bar_rejections(kw, args, word):
 
 
 def test_clean_makes_json_safe():
-    from tesshunt_mcp import store
+    from kepler_mcp import store
     out = store.clean({"a": np.float64("nan"), "b": np.int64(3), "c": [np.float32(1.23456789), float("inf")], "d": np.bool_(True)})
     assert out == {"a": None, "b": 3, "c": [pytest.approx(1.234568, rel=1e-6), None], "d": True}
     assert store.clean(2458325.7244012345) == 2458325.7244                  # a BJD epoch keeps its decimals
@@ -47,7 +47,7 @@ def test_clean_makes_json_safe():
 
 
 def test_cache_roundtrip_and_key_stability():
-    from tesshunt_mcp import store
+    from kepler_mcp import store
     k1 = store.key("t", {"tic": 1, "p": 3.927167}); k2 = store.key("t", {"p": 3.927167, "tic": 1})
     assert k1 == k2 and k1 != store.key("t", {"tic": 2, "p": 3.927167})
     assert store.cache_get("t", k1) is None
@@ -56,7 +56,7 @@ def test_cache_roundtrip_and_key_stability():
 
 
 def test_rate_limit_window(monkeypatch):
-    from tesshunt_mcp import store
+    from kepler_mcp import store
     monkeypatch.setitem(store.LIMITS, "heavy", 2)
     assert store.allow("s", "heavy", now=1000)[0] and store.allow("s", "heavy", now=1001)[0]
     ok, wait = store.allow("s", "heavy", now=1002)
@@ -66,7 +66,7 @@ def test_rate_limit_window(monkeypatch):
 
 
 def test_session_id_is_anonymous_and_stable():
-    from tesshunt_mcp import store
+    from kepler_mcp import store
     a = store.session_id({"x-forwarded-for": "203.0.113.9, 10.0.0.1", "user-agent": "claude"})
     assert a == store.session_id({"x-forwarded-for": "203.0.113.9", "user-agent": "claude"})
     assert a != store.session_id({"x-forwarded-for": "203.0.113.10", "user-agent": "claude"})
@@ -74,7 +74,7 @@ def test_session_id_is_anonymous_and_stable():
 
 
 def test_trace_has_no_address(tmp_data):
-    from tesshunt_mcp import store
+    from kepler_mcp import store
     store.trace("abc", "vet_signal", {"tic": 1}, {"verdict": "on_target"}, 1.2, False)
     store.trace("abc", "vet_signal", {"tic": 1}, None, 0.1, False, error="boom")
     lines = [json.loads(l) for l in open(next((tmp_data / "traces").iterdir()))]
@@ -83,7 +83,7 @@ def test_trace_has_no_address(tmp_data):
 
 
 def test_job_runs_once_and_reports_failure():
-    from tesshunt_mcp import store
+    from kepler_mcp import store
     calls = []
     def fn(progress):
         calls.append(1); progress("sector 1"); return {"status": "repeats"}, None
@@ -104,7 +104,7 @@ def test_job_runs_once_and_reports_failure():
 
 def test_server_registers_tools_and_guide():
     import anyio
-    from tesshunt_mcp import server
+    from kepler_mcp import server
     async def go():
         return {t.name for t in await server.mcp.list_tools()}
     names = anyio.run(go)
@@ -119,7 +119,7 @@ def test_server_registers_tools_and_guide():
 
 
 def test_verdict_links_to_evidence(tmp_data):
-    from tesshunt_mcp import store
+    from kepler_mcp import store
     store._seen.clear()
     store.trace("sid", "search_transits", {"tic": 7, "sector": 1}, {"tic": 7, "snr": 12.0}, 1.0, False)
     store.trace("sid", "vet_signal", {"tic": 7, "sector": 1}, {"tic": 7, "verdict": "on_target"}, 1.0, False)
@@ -160,7 +160,7 @@ def test_short_transit_allowed_exposure_smearing():
 
 # ---------------- leads queue ----------------
 def _leads(tmp_data, n=3):
-    from tesshunt_mcp import leads
+    from kepler_mcp import leads
     p = tmp_data / "l.jsonl"
     p.write_text("\n".join(json.dumps({"tic": 100 + i, "sector": 7, "period_d": 2.5 + i, "t0": 1500.1, "duration_h": 1.5,
                                          "depth_ppm": 9000, "snr": 20 - i, "star": {"Tmag": 13.5}}) for i in range(n)))
@@ -169,7 +169,7 @@ def _leads(tmp_data, n=3):
 
 
 def test_join_validates_and_keeps_names_unique(tmp_data):
-    from tesshunt_mcp import leads
+    from kepler_mcp import leads
     a = leads.join("star_gazer", "pass-word")
     assert a["handle"] == "star_gazer" and len(a["hunter_id"]) == 12 and a["returning"] is False
     again = leads.join("Star_Gazer", "pass-word")                 # same handle (any case) and word: signed back in with the same id
@@ -234,7 +234,7 @@ def test_hold_votes_do_not_count(tmp_data):
 
 
 def test_lead_filters_and_availability(tmp_data):
-    from tesshunt_mcp import leads
+    from kepler_mcp import leads
     p = tmp_data / "f.jsonl"
     rows = [{"tic": 1, "sector": 7, "period_d": 2.0, "t0": 1.0, "duration_h": 1.0, "depth_ppm": 10000, "snr": 20, "star": {"Teff": 3300, "rad": 0.4}},   # red, 4.4 Re
             {"tic": 2, "sector": 7, "period_d": 3.0, "t0": 1.0, "duration_h": 2.0, "depth_ppm": 300, "snr": 15, "star": {"Teff": 5800, "rad": 1.0}},     # yellow, 1.9 Re
@@ -252,7 +252,7 @@ def test_lead_filters_and_availability(tmp_data):
 
 # ---------------- sky map ----------------
 def _sky(tmp_data, n_stars=7, size=3):
-    from tesshunt_mcp import sky, leads
+    from kepler_mcp import sky, leads
     sky.PATCH_SIZE = size
     stars = [{"tic": 1000 + i, "ra": 100 + 0.1 * i, "dec": -30 + 0.01 * i, "Tmag": 13.0, "Teff": 3300, "rad": 0.4} for i in range(n_stars)]
     assert sky.build_ccd(7, 2, 3, stars) == 3 and sky.build_ccd(7, 2, 3, stars) == 0
@@ -281,7 +281,7 @@ def test_patches_are_built_claimed_and_released(tmp_data):
 
 
 def test_lead_bar_keeps_transit_shapes_and_drops_rotators():
-    from tesshunt_mcp import sky
+    from kepler_mcp import sky
     assert sky.lead_bar(_row(1, snr=12, depth_ppm=9000, depth_err_ppm=600))
     assert not sky.lead_bar(_row(1))                                                              # weak
     assert not sky.lead_bar(_row(1, snr=12, depth_ppm=9000, depth_err_ppm=600, duration_h=6.0))    # too long
@@ -362,7 +362,7 @@ def test_patches_by_star_type(tmp_data):
 # ---------------- voice and result contract ----------------
 def test_next_actions_entries_are_callable_shapes():
     import anyio
-    from tesshunt_mcp import core, server
+    from kepler_mcp import core, server
     a = core.act("vet_signal", "false-positive tests", tic=1, sector=7, period_d=np.float64(2.5), t0=1500.123456789, duration_h=1.0)
     assert a == {"tool": "vet_signal", "args": {"tic": 1, "sector": 7, "period_d": 2.5, "t0": 1500.12345679, "duration_h": 1.0}, "why": "false-positive tests"}
     json.dumps(a)
@@ -381,7 +381,7 @@ def test_next_actions_entries_are_callable_shapes():
 
 def test_register_is_instrument_not_tour_guide():
     import anyio, inspect, re
-    from tesshunt_mcp import core, leads, server, sky
+    from kepler_mcp import core, leads, server, sky
     async def go():
         return await server.mcp.list_tools(), await server.mcp.list_prompts()
     tools, prompts = anyio.run(go)
