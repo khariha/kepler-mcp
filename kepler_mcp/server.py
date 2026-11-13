@@ -902,7 +902,7 @@ th{{font-weight:700;border-bottom:.1rem solid #000}} .n{{text-align:right}} .kv 
 <tr><th>Fields mapped</th><td>{cv['fields_mapped']:,} / {cv['fields_total']:,}</td><th>Sectors open</th><td>{sectors}</td></tr></table></div>
 <h2>2. Leaderboard</h2><hr class="dots">
 <div class="wrap"><table class="board"><tr><th class="n">#</th><th>Planet hunter</th><th class="n">Stars searched</th><th class="n">Signals found</th><th class="n">Signals vetted</th></tr>{lead_rows}</table></div>
-<footer><span>Field: 1 detector &times; 1 Sector &times; 1 star type. Share of TESS data, not of sky area.</span><span class="mono">KEPLER v{VERSION} &middot; {stamp}</span></footer>
+<footer><span></span><span class="mono">KEPLER v{VERSION} &middot; {stamp}</span></footer>
 </body></html>"""
     return HTMLResponse(page)
 
