@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kepler search</title>
+<style>
+  :root { --bg: #fafaf7; --fg: #111; --mute: #666; --line: #ccc; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --mute: #999; --line: #333; } }
+  body { background: var(--bg); color: var(--fg); font: 12px/1.5 ui-monospace, Menlo, monospace; margin: 0; padding: 12px; }
+  pre { border: 1px solid var(--line); padding: 10px 12px; white-space: pre-wrap; margin: 0; }
+</style>
+</head>
+<body>
+<pre id="log">KEPLER  waiting for the host…</pre>
+<script>
+// Minimal MCP Apps view: JSON-RPC over postMessage (ui/initialize -> ui/notifications/initialized -> tool-result).
+const SEARCH_CORE = __SEARCH_CORE__;
+const logEl = document.getElementById("log"), lines = [];
+const T0 = performance.now();
+function log(s) { lines.push(s); logEl.textContent = lines.join("\n"); size(); }
+function since(t) { return ((performance.now() - t) / 1000).toFixed(1) + " s"; }
+let nextId = 1; const pending = {};
+function send(msg) { window.parent.postMessage({ jsonrpc: "2.0", ...msg }, "*"); }
+function request(method, params) { const id = nextId++; send({ id, method, params }); return new Promise(r => pending[id] = r); }
+function size() { send({ method: "ui/notifications/size-changed", params: { width: document.body.scrollWidth, height: document.body.scrollHeight + 4 } }); }
+let started = false;
+window.addEventListener("message", e => {
+  const m = e.data; if (!m || m.jsonrpc !== "2.0") return;
+  if (m.id && pending[m.id]) { pending[m.id](m.result ?? m.error); delete pending[m.id]; return; }
+  if (m.method === "ui/notifications/tool-result" && !started) {
+    started = true;
+    const p = m.params || {};
+    const star = p.structuredContent?.result ?? p.structuredContent ?? JSON.parse(p.content?.[0]?.text || "{}");
+    run(star);
+  }
+  if (m.method === "ui/resource-teardown" && m.id) send({ id: m.id, result: {} });
+});
+(async () => {
+  const init = await request("ui/initialize", { protocolVersion: "2026-01-26", appInfo: { name: "kepler-search", version: "0.1" }, appCapabilities: {} });
+  log(`HOST    ${init?.hostInfo?.name || "connected"} · WebAssembly ${typeof WebAssembly === "object" ? "present" : "missing"}`);
+  send({ method: "ui/notifications/initialized" });
+})();
+
+async function run(star) {
+  const URL_CUBE = `https://stpubdata.s3.amazonaws.com/tess/public/mast/tess-s${String(star.sector).padStart(4, "0")}-${star.cam}-${star.ccd}-cube.fits`;
+  let bytes = 0;
+  const rng = async (a, n) => { const r = await fetch(URL_CUBE, { headers: { Range: `bytes=${a}-${a + n - 1}` } });
+    if (r.status !== 206 && r.status !== 200) throw new Error(`S3 returned ${r.status}`); const b = new Uint8Array(await r.arrayBuffer()); bytes += b.length; return b; };
+  const pool = async (items, k, fn) => { const out = []; let i = 0;
+    await Promise.all(Array.from({ length: k }, async () => { while (i < items.length) { const j = i++; out[j] = await fn(items[j]); } })); return out; };
+  log(`STAR    ${star.name} · Sector ${star.sector}`);
+  try {
+    let t = performance.now();
+    const head = await rng(0, 2880 * 8);
+    log(`S3      cube header read (${(bytes / 1e3).toFixed(0)} kB)             ${since(t)}`);
+    t = performance.now();
+    await new Promise((ok, bad) => { const s = document.createElement("script"); s.src = "https://cdn.jsdelivr.net/pyodide/v0.28.3/full/pyodide.js"; s.onload = ok; s.onerror = () => bad(new Error("pyodide.js blocked")); document.head.appendChild(s); });
+    const py = await loadPyodide();
+    log(`PYTHON  Pyodide (WebAssembly) running                ${since(t)}`);
+    t = performance.now();
+    await py.loadPackage(["numpy", "scipy", "astropy"]);
+    py.FS.writeFile("/home/pyodide/search_core.py", SEARCH_CORE);
+    py.runPython("import sys; sys.path.insert(0, '/home/pyodide'); import search_core as S, numpy as np, json");
+    log(`        numpy, scipy, astropy ready                  ${since(t)}`);
+    t = performance.now();
+    py.globals.set("head", head);
+    const G = JSON.parse(py.runPython(`
+h = bytes(head.to_py()).decode('latin-1')
+h0, l0 = S.parse_header(h); h1, l1 = S.parse_header(h[l0:])
+NF, NC, NR = h1['NAXIS2'], h1['NAXIS3'], h1['NAXIS4']; data0 = l0 + l1
+json.dumps(dict(NF=NF, NC=NC, data0=data0, tab=data0 + (NR*NC*NF*8 + 2879)//2880*2880))`));
+    py.globals.set("thead", await rng(G.tab, 2880 * 30));
+    const tl = JSON.parse(py.runPython(`th, tl = S.parse_header(bytes(thead.to_py()).decode('latin-1')); json.dumps([tl, th['NAXIS1']*th['NAXIS2']])`));
+    py.globals.set("table", await rng(G.tab + tl[0], tl[1]));
+    const c0 = Math.round(star.col) - 1 - (star.size >> 1), r0 = Math.round(star.row) - 1 - (star.size >> 1);
+    py.globals.set("strips", await pool(Array.from({ length: star.size }, (_, k) => r0 + k), 6, r => rng(G.data0 + ((r * G.NC + c0) * G.NF * 2) * 4, star.size * G.NF * 8)));
+    log(`PIXELS  ${star.size}x${star.size} cutout, ${(bytes / 1e6).toFixed(1)} MB from NASA S3        ${since(t)}`);
+    t = performance.now();
+    const res = JSON.parse(py.runPython(`
+tstart, tstop, q = S.read_table(bytes(table.to_py()), th)
+flux, err = S.strips_to_cube([bytes(s.to_py()) for s in strips], NF, ${star.size})
+r = S.run_star((tstart + tstop) / 2, flux, err, q)
+for k in ('fold_h', 'fold_f', 'pg_period', 'pg_power'): r.pop(k, None)
+json.dumps(r)`));
+    log(`SEARCH  done                                         ${since(t)}`);
+    log(`RESULT  P = ${res.period_d.toFixed(5)} d · depth ${Math.round(res.depth_ppm)} ppm · S/N ${res.snr.toFixed(1)} · total ${since(T0)}`);
+  } catch (e) { log(`ERROR   ${e.message || e}`); }
+}
+</script>
+</body>
+</html>
