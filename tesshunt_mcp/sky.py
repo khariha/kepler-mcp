@@ -202,6 +202,47 @@ def finish(pid, verified, rejected_reason=None, now=None):
         return {"patch_id": pid, "status": "done", "opened_by": p["opened_by"], "n_stars": p["n_stars"], "n_leads": len(verified)}
 
 
+_progress = {}
+
+
+def set_progress(hunter_id, pid, done, total, signals, latest=None, now=None):
+    """Heartbeat from the helper while it searches. Only the handle holding the patch may report."""
+    with _lock:
+        with leads._db() as lc:
+            me = leads._handle(lc, hunter_id)
+        with _db() as c:
+            p = c.execute("select status, opened_by, n_stars from patches where id=?", (pid,)).fetchone()
+        if not p or p["status"] != "claimed" or p["opened_by"] != me:
+            raise SkyError(f"patch {pid} is not held by this handle")
+        prev = _progress.get(pid) or {"started": now or time.time(), "signals_seen": []}
+        total = int(p["n_stars"]); done = max(0, min(int(done), total))
+        seen = prev["signals_seen"]
+        if latest and latest not in seen:
+            seen = (seen + [str(latest)[:120]])[-5:]
+        _progress[pid] = {"started": prev["started"], "updated": now or time.time(), "done": done, "total": total,
+                          "signals": max(0, int(signals)), "signals_seen": seen}
+
+
+def progress(pid, now=None):
+    """Live state of a running search, with a text block ready to show, or None."""
+    now = now or time.time()
+    g = _progress.get(pid)
+    if not g or now - g["updated"] > 600:
+        return None
+    done, total = g["done"], g["total"]
+    elapsed = max(now - g["started"], 1e-9)
+    rate = done / elapsed * 60
+    left = (total - done) / rate if rate > 0 else None
+    width = 28; full = int(width * done / max(total, 1))
+    bar = "\u2595" + "\u2588" * full + "\u2591" * (width - full) + "\u258f"
+    lines = [f"\U0001F6F0  KEPLER \u00b7 field {pid} \u00b7 TESS archive downlink",
+             f"   {bar} {100 * done // max(total, 1):3d}%   {done}/{total} stars   {g['signals']} signal(s)" + (f"   {left:.1f} min left" if left is not None else "")]
+    lines += [f"   \u25C9 {s}" for s in g["signals_seen"]]
+    return {"stars_done": done, "stars_total": total, "percent": 100 * done // max(total, 1), "signals_so_far": g["signals"],
+            "minutes_left": round(left, 1) if left is not None else None, "stars_per_minute": round(rate, 1),
+            "latest_signals": g["signals_seen"], "display": "\n".join(lines)}
+
+
 def get(pid):
     with _lock, _db() as c:
         p = c.execute("select * from patches where id=?", (pid,)).fetchone()

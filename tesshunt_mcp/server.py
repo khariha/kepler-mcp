@@ -40,7 +40,8 @@ Results
 Conduct
 - Before a step that takes more than a few seconds, or that runs a command on the user's computer, state in one or two sentences what it does, what it
   reads and sends, and how long it takes. Wait for the user's go-ahead before running a command on their computer. Do not start silently.
-- While a long step runs, relay its progress lines. After each step, state the result and the next step before taking it.
+- While a long step runs, show its progress: results carry `display`, a short text block to print verbatim in a code block. For a field search, run the
+  command in the background and call patch_status in a loop, showing each `display`. After each step, state the result and the next step before taking it.
 
 Rules
 - Wording follows AAS-journal and TESS follow-up usage. Write "planet candidate", "transit-like signal", "false positive", "false alarm",
@@ -379,7 +380,7 @@ def hunt() -> str:
 
 1. join(handle, recovery_word) if there is no hunter_id yet. The same pair signs back in later.
 2. next_lead(hunter_id), with star_type or planet_size if a kind was requested. If none: open_patch(hunter_id); state its `procedure` and `duration`
-   and get a go-ahead; run its command and relay the progress lines; patch_status; then next_lead.
+   and get a go-ahead; run its command in the background; call patch_status until done, showing each `display` block; then next_lead.
 3. Run the lead's next_actions with the given arguments: catalog_check, vet_signal, followup_start, then job_status until done. Add neighbors with the lead's depth.
 4. Decide: candidate, eclipsing_binary, blend_or_off_target, systematics_or_noise, known_object, or undecided. Cite the deciding numbers.
 5. submit_vet(hunter_id, lead_id, verdict, reason, deciding_test). Report the lead's new status.
@@ -492,28 +493,45 @@ async def open_patch(hunter_id: str, ctx: Context, patch_id: str | None = None, 
                           "For each star the helper reads its pixels from NASA's public TESS full-frame images (MAST archive), builds a light curve, and runs a box-least-squares transit search.",
                           "One row of numbers per star is uploaded; no files, credentials or personal data.",
                           "The hub re-runs every star the upload flags, and one unflagged star, before any signal is queued for vetting."],
-            "duration": f"about {max(1, round(p['n_stars'] / 22))} minutes for {p['n_stars']} stars on a laptop; progress prints as a bar with stars done and signals so far",
-            "run_in": "foreground if possible, so the progress bar is visible; if run in the background, relay its lines as they arrive",
+            "duration": f"about {max(1, round(p['n_stars'] / 20))} minutes for {p['n_stars']} stars on a laptop",
+            "run_in": "background. While it runs, call patch_status repeatedly (each call waits for the next progress reading) and show its `display` "
+                      "block verbatim in a code block each time, so the user watches the downlink in the conversation. A command's own output is folded away in most clients.",
             "next_actions": [core.act("patch_status", "result of the search, after the command finishes", patch_id=p["id"])]}
 
 
 @mcp.tool(title="Patch status", annotations=READ)
 async def patch_status(patch_id: str, ctx: Context, wait_s: float = 20.0) -> dict:
-    """State of a patch: unopened, claimed (no upload yet), verifying (the hub is re-running flagged stars), or done with the number of
-    leads produced. Waits up to wait_s seconds (max 25) while verifying."""
+    """State of a patch: unopened, claimed (no upload yet), searching (live progress from the user's computer), verifying (the hub is re-running
+    flagged stars), or done with the number of leads produced. While searching or verifying, each call waits up to wait_s seconds (max 25) for
+    the next change. `display` is a short text block (progress bar, stars done, signals so far) to show verbatim in a code block."""
     deadline = time.time() + max(0.0, min(float(wait_s), 25.0))
+    first = sky.progress(patch_id)
+    seen_done = first["stars_done"] if first else None
     while True:
         p = _sky_call(sky.get, patch_id)
-        if p["status"] != "verifying" or time.time() >= deadline:
+        prog = sky.progress(patch_id) if p["status"] == "claimed" else None
+        appeared = prog is not None and first is None                   # the search has just made contact
+        moved = prog is not None and seen_done is not None and prog["stars_done"] >= seen_done + max(5, prog["stars_total"] // 15)
+        if p["status"] not in ("verifying", "claimed") or time.time() >= deadline or moved or appeared:
             break
         await anyio.sleep(1.0)
     out = {"patch_id": patch_id, "status": p["status"], "stars": p["n_stars"], "opened_by": p["opened_by"], "signals_flagged": p["n_flagged"], "leads": p["n_leads"]}
     if p["status"] == "done":
         out["summary"] = f"Field {patch_id}: searched and stored. {p['n_leads']} transit-like signal(s) reproduced by the hub" + (f"; identified by {p['opened_by']}." if p["n_leads"] else ".")
+        out["display"] = (f"\U0001F6F0  KEPLER \u00b7 field {patch_id} \u00b7 complete\n   {p['n_stars']} stars searched \u00b7 {p['n_flagged']} flagged \u00b7 "
+                          f"{p['n_leads']} verified by the hub and queued for vetting")
         out["next_actions"] = []
     elif p["status"] == "verifying":
         out["summary"] = f"Field {patch_id}: upload received. Re-running {p['n_flagged']} flagged star(s)."
+        out["display"] = f"\U0001F6F0  KEPLER \u00b7 field {patch_id} \u00b7 uplink received\n   hub is re-running {p['n_flagged']} flagged star(s) to verify"
         out["next_actions"] = [core.act("patch_status", "verification result", patch_id=patch_id)]
+    elif p["status"] == "claimed" and prog is not None:
+        out["status"] = "searching"
+        out["progress"] = {k: v for k, v in prog.items() if k != "display"}
+        out["display"] = prog["display"]
+        out["summary"] = (f"Field {patch_id}: searching, {prog['stars_done']} of {prog['stars_total']} stars, {prog['signals_so_far']} signal(s) so far"
+                          + (f", about {prog['minutes_left']} min left." if prog["minutes_left"] is not None else "."))
+        out["next_actions"] = [core.act("patch_status", "next progress reading", patch_id=patch_id)]
     elif p["status"] == "claimed":
         out["summary"] = f"Field {patch_id}: claimed by {p['opened_by']}, no upload yet."
         out["next_actions"] = [core.act("patch_status", "after the search command finishes", patch_id=patch_id)]
@@ -648,6 +666,24 @@ async def patch_state(request):
     except sky.SkyError as e:
         return JSONResponse({"error": str(e)}, status_code=404)
     return JSONResponse({k: p[k] for k in ("id", "status", "n_stars", "n_flagged", "n_leads", "opened_by", "note")})
+
+
+@mcp.custom_route("/patch/{pid}/progress", methods=["POST"])
+async def patch_progress(request):
+    from starlette.responses import JSONResponse
+    body = await request.body()
+    if len(body) > 4000:
+        return JSONResponse({"error": "too large"}, status_code=413)
+    try:
+        import json as _json
+        d = _json.loads(body)
+        sky.set_progress(str(d.get("hunter", "")), request.path_params["pid"], int(d.get("done", 0)), int(d.get("total", 0)),
+                         int(d.get("signals", 0)), d.get("latest"))
+    except (sky.SkyError, leads.LeadError) as e:
+        return JSONResponse({"error": str(e)}, status_code=403)
+    except Exception:
+        return JSONResponse({"error": "unreadable"}, status_code=400)
+    return JSONResponse({"ok": True})
 
 
 @mcp.custom_route("/patch/{pid}/results", methods=["POST"])

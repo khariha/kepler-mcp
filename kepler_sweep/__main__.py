@@ -30,6 +30,14 @@ def _http(url, payload=None, timeout=120):
         raise SystemExit(f"error: hub unreachable at {url.split('/patch')[0]} ({e.reason})")
 
 
+def _beat(hub, patch, hunter, done, total, signals, latest=None):
+    """Tell the hub how far the search has got, so the assistant can show it. Never fatal."""
+    try:
+        _http(f"{hub}/patch/{patch}/progress", {"hunter": hunter, "done": done, "total": total, "signals": signals, "latest": latest}, timeout=8)
+    except BaseException:
+        pass
+
+
 def out(msg=""):
     """Print at once. Piped output is block-buffered by default, which hid all progress when an assistant ran the helper."""
     print(msg, flush=True)
@@ -71,6 +79,7 @@ def sweep(patch, hunter, hub=DEFAULT_HUB, workers=None, say=out):
     say("             What happens: for each star, read its pixels from NASA's public TESS full-frame images, build a light curve,")
     say("             and search it for a repeating transit-like dip. Only the resulting numbers are sent back.")
     t0 = time.time(); last = 0; first_error = None
+    _beat(hub, patch, hunter, len(done), len(stars), sum(looks_like_a_signal(x) for x in done.values()))
     if todo:
         with ProcessPoolExecutor(workers) as ex, open(path, "a") as f:
             failures = 0
@@ -85,12 +94,15 @@ def sweep(patch, hunter, hub=DEFAULT_HUB, workers=None, say=out):
                 done[r["tic"]] = r
                 f.write(json.dumps(r) + "\n"); f.flush()
                 if looks_like_a_signal(r):
-                    say(f"   \u25C9 signal  TIC {r['tic']}: depth {r['depth_ppm']/1e4:.2f}%, P = {r['period_d']:.3f} d, {int(r['n_transits'])} transits, S/N {r['snr']:.1f}")
+                    line = f"TIC {r['tic']}: depth {r['depth_ppm']/1e4:.2f}%, P = {r['period_d']:.3f} d, {int(r['n_transits'])} transits, S/N {r['snr']:.1f}"
+                    say(f"   \u25C9 signal  {line}")
+                    _beat(hub, patch, hunter, len(done), len(stars), sum(looks_like_a_signal(x) for x in done.values()), "signal " + line)
                 if len(done) - last >= max(5, len(stars) // 15) or len(done) == len(stars):
                     last = len(done)
                     n_sig = sum(looks_like_a_signal(x) for x in done.values())
                     rate = (len(done) - (len(stars) - len(todo))) / max(time.time() - t0, 1e-9) * 60
                     left = (len(stars) - len(done)) / max(rate, 1e-9)
+                    _beat(hub, patch, hunter, len(done), len(stars), n_sig)
                     say(f"   downlink {bar(len(done), len(stars))} {100 * len(done) // len(stars):3d}%  {len(done)}/{len(stars)} stars  {n_sig} signal(s)  {left:.1f} min left")
     if len(done) < 0.9 * len(stars):
         raise SystemExit(f"error: {len(done)} of {len(stars)} stars searched ({first_error if todo else 'no error recorded'}); nothing uploaded; rerun to resume")

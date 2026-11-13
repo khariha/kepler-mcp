@@ -405,3 +405,20 @@ def test_register_is_instrument_not_tour_guide():
     banned = re.compile(r"(?i)\b(you|your|yours|let's|welcome|congratulations|great|awesome)\b|!")
     bad = {k: banned.search(v).group(0) for k, v in texts.items() if banned.search(v)}
     assert not bad, bad
+
+
+def test_live_progress_display(tmp_data):
+    sky, leads = _sky(tmp_data)
+    sky._progress.clear()
+    a, b = leads.join("ann", "pass-word")["hunter_id"], leads.join("bob", "pass-word")["hunter_id"]
+    pid = sky.claim(a)["id"]
+    assert sky.progress(pid) is None
+    with pytest.raises(sky.SkyError):
+        sky.set_progress(b, pid, 1, 3, 0)                              # only the holder may report
+    sky.set_progress(a, pid, 0, 3, 0, now=1000)
+    sky.set_progress(a, pid, 2, 3, 1, "signal TIC 1001: depth 1.01%, P = 0.455 d", now=1060)
+    g = sky.progress(pid, now=1060)
+    assert g["stars_done"] == 2 and g["percent"] == 66 and g["signals_so_far"] == 1 and g["minutes_left"] == 0.5
+    lines = g["display"].split("\n")
+    assert "field " + pid in lines[0] and "2/3 stars" in lines[1] and "\u2588" in lines[1] and "TIC 1001" in lines[2]
+    assert sky.progress(pid, now=1060 + 601) is None                   # stale readings are not shown
