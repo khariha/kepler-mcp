@@ -246,7 +246,7 @@ def resolve_star(query):
     if (s.get("matched_at_arcsec") or 0) > 5:
         cav.append(f"the nearest catalogued star is {s['matched_at_arcsec']:.1f} arcsec from the position given; check it is the intended star")
     if giant or unsure:
-        cav.append("a giant star: its size makes planet transits far too shallow to see, and it pulsates; a transit search here is not meaningful")
+        cav.append(("a giant star" if giant else "probably a giant star (no radius in the catalogue, but too bright for a nearby cool dwarf)") + ": its size makes planet transits far too shallow to see, and it pulsates; a transit search here is not meaningful")
     if tmag is not None and tmag < 6.5:
         cav.append(f"very bright (Tmag {tmag:.1f}): saturated in TESS images, so depths are unreliable")
     if s.get("matched_at_arcsec") is not None and tmag is not None and tmag > 16:

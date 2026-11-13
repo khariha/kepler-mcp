@@ -1,18 +1,24 @@
-# One box: the MCP server plus Caddy for HTTPS. Set MCP_DOMAIN and KEPLER_SALT in deploy/.env (not committed).
+# One box: the Kepler server plus Caddy for HTTPS, behind Cloudflare. Settings in deploy/.env (not committed): see README.md.
+# Image: built here from the repository, or set image: ghcr.io/khariha/kepler-mcp:<tag>. Never Docker Hub.
 services:
   mcp:
     build: ..
     restart: unless-stopped
     environment:
       KEPLER_HOSTS: ${MCP_DOMAIN}
+      KEPLER_PUBLIC_URL: ${KEPLER_PUBLIC_URL}
       KEPLER_SALT: ${KEPLER_SALT}
+      KEPLER_EXCLUDE: /app/data/private_exclude.txt
       KEPLER_LIGHT_PER_HOUR: "60"
       KEPLER_HEAVY_PER_HOUR: "5"
       KEPLER_CONCURRENCY: "4"
-      KEPLER_JOB_WORKERS: "2"
+      KEPLER_JOB_WORKERS: "3"
+      KEPLER_TIMEOUT_S: "85"
+      KEPLER_FETCH_TIMEOUT: "180"
+      KEPLER_NET_TIMEOUT: "60"
     volumes:
       - mcpdata:/app/data
-    mem_limit: 3g
+    mem_limit: 6g
   caddy:
     image: caddy:2
     restart: unless-stopped

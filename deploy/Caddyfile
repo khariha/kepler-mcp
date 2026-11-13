@@ -3,10 +3,11 @@
 	request_body {
 		max_size 1MB
 	}
-	# Caddy replaces any client-sent X-Forwarded-For with the real peer address, which the rate limiter keys on.
+	# Behind Cloudflare: the security group admits only Cloudflare, which sets CF-Connecting-IP to the visitor's address.
+	# The server's rate limiter keys on that header; Caddy passes it through unchanged.
 	reverse_proxy mcp:8000 {
 		transport http {
-			response_header_timeout 150s
+			response_header_timeout 95s
 		}
 	}
 }

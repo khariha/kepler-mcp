@@ -500,6 +500,8 @@ Constraints: "planet candidate", never "planet" or "discovered". Numbers only fr
 # ---------------- the sky map: patches searched on hunters' own computers ----------------
 EXCLUDE_FILE = os.environ.get("KEPLER_EXCLUDE", os.path.join(store.ROOT, "ops", "private_exclude.txt"))
 SWEEP_CMD = os.environ.get("KEPLER_SWEEP_CMD", "kepler-sweep")
+# How a first-time user gets the helper. Needs the repository to be public (or the package on PyPI: set KEPLER_SWEEP_INSTALL).
+SWEEP_INSTALL = os.environ.get("KEPLER_SWEEP_INSTALL", 'python3 -m pip install --user "git+https://github.com/khariha/kepler-mcp"')
 PUBLIC_URL = os.environ.get("KEPLER_PUBLIC_URL", "")
 
 
@@ -605,7 +607,10 @@ async def open_patch(hunter_id: str, ctx: Context, patch_id: str | None = None, 
     cmd = f"{SWEEP_CMD} {p['id']} --hunter {hunter_id} --hub {_base_url(ctx)}"
     store.trace(_sid(ctx), "open_patch", {"patch_id": p["id"]}, {"patch_id": p["id"]}, 0, False)
     return {"patch_id": p["id"], "sector": p["sector"], "star_type": p["pop"], "stars": p["n_stars"], "held_minutes": int((p["claimed_until"] - time.time()) / 60),
-            "command": cmd, "resumed": p["resumed"], "detectable": sky.POPULATIONS[p["pop"]]["finds"],
+            "command": cmd, "resumed": p["resumed"],
+            "install_if_missing": (None if SWEEP_CMD != "kepler-sweep" else
+                                   {"check": "command -v kepler-sweep", "install": SWEEP_INSTALL,
+                                    "note": "one-time, about a minute; needs Python 3.11 or newer. Show the install line to the user before running it."}), "detectable": sky.POPULATIONS[p["pop"]]["finds"],
             "display": R.line("FIELD", f"{p['id']} claimed", f"{p['n_stars']} {p['pop']} stars", f"Sector {p['sector']}",
                               f"held {int((p['claimed_until'] - time.time()) / 60)} min"),
             "summary": (f"Field {p['id']} claimed: {p['n_stars']} unsearched {p['pop']} stars, Sector {p['sector']}. The assistant executes `command` with its shell tool "
@@ -615,7 +620,8 @@ async def open_patch(hunter_id: str, ctx: Context, patch_id: str | None = None, 
                           "One row of numbers per star is uploaded; no files, credentials or personal data.",
                           "The hub re-runs every star the upload flags, and one unflagged star, before any signal is queued for vetting."],
             "duration": f"about {max(1, round(p['n_stars'] / 20))} minutes for {p['n_stars']} stars on a laptop",
-            "run_in": "Show `command` to the user in one line, then execute it with the shell tool, in the background, in the same turn as this result. "
+            "run_in": ("If install_if_missing is set and its check fails, show its install line to the user and run it first. " if SWEEP_CMD == "kepler-sweep" else "")
+                      + "Show `command` to the user in one line, then execute it with the shell tool, in the background, in the same turn as this result. "
                       "Do not ask the user to run it themselves. Then call patch_status repeatedly (each call waits for the next progress reading) and show its `display` block verbatim "
                       "in a code block each time, without ending the turn, until patch_status returns keep_polling false (about "
                       f"{max(4, round(p['n_stars'] / 20 * 3))} calls). Only if no shell tool exists: say so and give the command.",
