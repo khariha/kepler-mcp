@@ -5,46 +5,67 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kepler field search</title>
 <style>
-  :root { --bg: #fafaf7; --fg: #111; --mute: #666; --line: #ccc; --accent: #1f5fd1; --good: #1d7a3a; --bad: #b42318; }
-  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #111; --fg: #eee; --mute: #999; --line: #333; --accent: #6ea0ff; --good: #5fc27e; --bad: #f97066; } }
-  :root[data-theme="dark"] { --bg: #111; --fg: #eee; --mute: #999; --line: #333; --accent: #6ea0ff; --good: #5fc27e; --bad: #f97066; }
-  body { background: var(--bg); color: var(--fg); font: 12px/1.55 ui-monospace, Menlo, monospace; margin: 0; padding: 16px; }
-  main { max-width: 760px; margin: 0 auto; }
-  .app main { max-width: none; }
-  .app { padding: 10px; }
-  h1 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; margin: 0 0 10px; }
-  .app h1, .app .note { display: none; }
-  pre { border: 1px solid var(--line); padding: 10px 12px; white-space: pre-wrap; word-break: break-word; margin: 0 0 10px; }
-  .bar { height: 6px; background: var(--line); margin: 0 0 10px; }
+  /* Idiom: engineering datasheet, as on the Kepler board (square, ruled, dot screens, mono numerals), in light and dark. */
+  :root { --page: #eee; --bg: #fff; --fg: #000; --mute: #555; --line: #bfbfbf; --rule: #000; --frame: #888; --shadow: #ccc; --dot: #bbb;
+          --accent: #002dce; --good: #00794c; --bad: #e7040f; --amber: #ffb700; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+          --page: #000; --bg: #111; --fg: #eee; --mute: #999; --line: #333; --rule: #eee; --frame: #444; --shadow: #000; --dot: #444;
+          --accent: #4d7dff; --good: #2fbf86; --bad: #ff4a3d; } }
+  :root[data-theme="dark"] { --page: #000; --bg: #111; --fg: #eee; --mute: #999; --line: #333; --rule: #eee; --frame: #444; --shadow: #000; --dot: #444;
+          --accent: #4d7dff; --good: #2fbf86; --bad: #ff4a3d; }
+  * { box-sizing: border-box; }
+  html { background: var(--page); }
+  body { background: var(--page); color: var(--fg); margin: 0; padding: 2rem 1rem; font: 14px/1.5 "Inter Tight", "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; background: var(--bg); border: 1px solid var(--frame); box-shadow: 2px 2px var(--shadow); padding: 1rem 1.2rem; }
+  pre, .mono, .cap, .stat { font-family: "JetBrains Mono", "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+  .app { padding: 0; } .app main { max-width: none; border: none; box-shadow: none; padding: .6rem; }
+  .head { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; }
+  .head span { color: var(--mute); }
+  h1, h2 { font-size: 1rem; font-weight: 700; line-height: 1.2; margin: 0; }
+  h1 { letter-spacing: .04em; text-transform: uppercase; }
+  .colorbar { display: flex; height: .5rem; margin: .5rem 0 1.5rem; } .colorbar i { flex: 1; }
+  hr.dots { height: 1rem; border: none; margin: .25rem 0 .75rem; background: radial-gradient(var(--mute) .5px, transparent 1px) 0 0/3px 3px; }
+  .app .head, .app .colorbar, .app .note { display: none; }
+  .read { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: .4rem; }
+  .read b { font-size: 1.6rem; line-height: 1.6rem; }
+  .bar { height: 1.6rem; border: .1rem solid var(--rule); box-shadow: 2px 2px var(--shadow); margin: 0 0 1.5rem;
+         background: radial-gradient(var(--dot) .5px, transparent 1px) 0 0/3px 3px; }
   .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
-  .note { color: var(--mute); margin: 0; }
+  pre { border: .1rem solid var(--line); padding: .6rem .8rem; white-space: pre-wrap; word-break: break-word; margin: 0 0 1rem; font-size: 12px; line-height: 1.55; }
+  .note { color: var(--mute); margin: 0; font-size: 13px; } .note b { color: var(--fg); }
   .done { color: var(--good); } .err { color: var(--bad); }
-  .card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 10px; margin: 0 0 6px; }
-  .card canvas { width: 100%; border: 1px solid var(--line); display: block; background: #000; }
+  .card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: .7rem; margin: 0 0 .4rem; }
+  .card canvas { width: 100%; border: .1rem solid var(--rule); box-shadow: 2px 2px var(--shadow); display: block; background: #000; }
   .card canvas.fold { background: var(--bg); }
-  .cap { color: var(--mute); margin: 0 0 10px; min-height: 1.55em; }
-  .cap b { color: var(--fg); font-weight: 600; } .cap .sig { color: var(--accent); font-weight: 600; }
-  .thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(38px, 1fr)); gap: 4px; margin: 0 0 10px; }
+  .cap { color: var(--mute); margin: .4rem 0 1.5rem; min-height: 1.55em; font-size: 12px; }
+  .cap b { color: var(--fg); font-weight: 700; } .cap .sig { color: var(--accent); font-weight: 700; }
+  .thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(38px, 1fr)); gap: 3px; margin: 0 0 1.5rem; min-height: 1rem; }
   .thumbs canvas { width: 100%; aspect-ratio: 1; display: block; border: 2px solid transparent; cursor: pointer; image-rendering: pixelated; }
-  .thumbs canvas.sig { border-color: var(--accent); }
+  .thumbs canvas.sig { border-color: var(--amber); }
   .thumbs canvas.on { outline: 1px solid var(--fg); }
-  @media (max-width: 520px) { .card { grid-template-columns: 1fr; } }
+  @media (max-width: 520px) { body { padding: 0; } main { border: none; box-shadow: none; } .card { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <main>
-  <h1>Kepler · field search</h1>
-  <div class="bar"><div id="bar"></div></div>
+  <div class="head"><h1>Kepler MCP · Field search</h1><span>Generative Experiences</span></div>
+  <div class="colorbar" aria-hidden="true"><i style="background:#000"></i><i style="background:#003f9b"></i><i style="background:#0092ff"></i><i style="background:#00c986"></i><i style="background:#ffb700"></i><i style="background:#ff4a03"></i><i style="background:#e7040f"></i></div>
+  <h2>1. Progress</h2><hr class="dots">
+  <div class="read"><b class="mono" id="pct">0%</b><span class="mono" id="pctnote">starting</span></div>
+  <div class="bar" role="progressbar" aria-label="Stars searched"><div id="bar"></div></div>
+  <h2>2. Current star</h2><hr class="dots">
   <div class="card" id="card" hidden>
     <canvas id="cut" width="300" height="300" aria-label="pixel cutout of the current star, aperture outlined"></canvas>
     <canvas id="lc" class="fold" width="600" height="300" aria-label="light curve folded at the best period"></canvas>
   </div>
-  <div class="cap" id="cap"></div>
+  <div class="cap" id="cap">waiting for the first star</div>
+  <h2>3. Stars searched</h2><hr class="dots">
   <div class="thumbs" id="thumbs"></div>
+  <h2>4. Log</h2><hr class="dots">
   <pre id="log">starting…</pre>
   <p class="note">This tab searches about 150 stars on your computer: it reads their pixels from NASA's public TESS archive, looks for
-  repeating transit-like dips, and sends one row of numbers per star to Kepler. Keep it open (visible) until it says done; closing it pauses
-  the search, and opening the link again resumes where it stopped.</p>
+  repeating transit-like dips, and sends one row of numbers per star to Kepler. <b>Keep this tab open and visible until it says done.
+  Closing it pauses the search; open the link again to resume where it stopped.</b></p>
 </main>
 <script>
 "use strict";
@@ -185,11 +206,17 @@ async function main() {
   say(`KEPLER  field ${pid} · TESS Sector ${sector} · camera ${P.camera} CCD ${P.ccd} · ${total} stars`);
   const rows = saved(pid);
   const todo = stars.filter(s => !rows[s.tic]);
-  if (total - todo.length) say(`RESUME  ${total - todo.length} stars already searched in this browser`);
+  if (total - todo.length) {
+    say(`RESUME  ${total - todo.length} stars already searched in this browser`);
+    const k = total - todo.length; barEl.style.width = (100 * k / total).toFixed(1) + "%";
+    document.getElementById("pct").textContent = Math.floor(100 * k / total) + "%";
+    document.getElementById("pctnote").textContent = `${k}/${total} stars · resumed`;
+  }
   const beat = (extra = {}) => hub(base, `/patch/${pid}/progress`, { hunter, runner: RUNNER, done: Object.keys(rows).length, total,
     signals: Object.values(rows).filter(looksLikeSignal).length, ...extra });
   await beat();      // refuses if another window is already searching this field
 
+  if (todo.length) {      // nothing left to search (a finished field reopened): go straight to the upload
   let t = performance.now();
   await new Promise((ok, bad) => { const s = document.createElement("script"); s.src = PYODIDE + "pyodide.js"; s.onload = ok;
     s.onerror = () => bad(new Error("could not load Pyodide from cdn.jsdelivr.net")); document.head.appendChild(s); });
@@ -253,6 +280,8 @@ json.dumps(S.patch_row(json.loads(${JSON.stringify(JSON.stringify(s))}), times, 
     const n = Object.keys(rows).length, nsig = Object.values(rows).filter(looksLikeSignal).length;
     const left = (performance.now() - tStart) / (i + 1) * (todo.length - i - 1);
     barEl.style.width = (100 * n / total).toFixed(1) + "%";
+    document.getElementById("pct").textContent = Math.floor(100 * n / total) + "%";
+    document.getElementById("pctnote").textContent = `${n}/${total} stars · ${nsig} signal${nsig === 1 ? "" : "s"} · about ${mmss(left)} left`;
     head[head.length - 1].startsWith("SEARCH") ? head.pop() : null;
     head.push(`SEARCH  ${n}/${total} stars · ${nsig} signal${nsig === 1 ? "" : "s"} · ${(bytes / 1e6).toFixed(0)} MB read · about ${mmss(left)} left`); render();
     if (looksLikeSignal(r)) {
@@ -263,6 +292,7 @@ json.dumps(S.patch_row(json.loads(${JSON.stringify(JSON.stringify(s))}), times, 
     }
     await new Promise(z => setTimeout(z, 0));        // let the page repaint between stars
   }
+  }
   const all = Object.values(rows), ok = all.filter(r => r.status === "ok").length;
   if (all.length < 0.9 * total) throw new Error(`${all.length} of ${total} stars searched; nothing uploaded. Reload to resume.`);
   say(`UPLOAD  ${all.length} rows (${ok} usable light curves) · one row of numbers per star`);
@@ -271,7 +301,8 @@ json.dumps(S.patch_row(json.loads(${JSON.stringify(JSON.stringify(s))}), times, 
   let fin = { status: "verifying" };
   for (let k = 0; k < 90 && fin.status === "verifying"; k++) { await new Promise(z => setTimeout(z, 4000)); fin = await hub(base, `/patch/${pid}/status`); }
   forget(pid);
-  barEl.style.width = "100%";
+  barEl.style.width = "100%"; document.getElementById("pct").textContent = "100%";
+  document.getElementById("pctnote").textContent = fin.status === "done" ? "done" : (fin.status || "");
   if (fin.status === "done") {
     const n = fin.n_leads || 0;
     say(n ? `DONE    ${n} transit-like signal(s) verified and queued for vetting · ${mmss(performance.now() - T0)}`
