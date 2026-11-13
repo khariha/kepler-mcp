@@ -259,6 +259,11 @@ def stats(hunter_id):
         return out
 
 
+def handles():
+    with _lock, _db() as c:
+        return [r["handle"] for r in c.execute("select handle from hunters")]
+
+
 def board(limit=50):
     with _lock, _db() as c:
         tot = {r["status"]: r["n"] for r in c.execute("select status, count(*) n from leads group by status")}

@@ -854,55 +854,39 @@ async def board_html(request):
     from starlette.responses import HTMLResponse
     b = leads.board()
     e = html.escape
-
-    def rows(items, who_key):
-        if not items:
-            return '<tr><td colspan="4" class="none">None yet.</td></tr>'
-        return "".join(f"<tr><td>TIC {i['tic']}</td><td>{i['period_d']:.3f} d</td><td>{i['depth_ppm']/1e4:.2f}%</td><td>{e(', '.join(i[who_key]))}</td></tr>" for i in items)
-    sk = sky.summary(); st = sk["totals"]
-    cover = "".join(f"<tr><td>Sector {d['sector']}, camera {d['camera']}, detector {d['ccd']}, {d['star_type']} stars</td><td>{d['searched']} of {d['patches']}</td><td>{d['stars_searched']}</td><td>{d['leads_found']}</td></tr>"
-                    for d in sk["detectors"]) or '<tr><td colspan="4" class="none">No patches mapped yet.</td></tr>'
-    openers = "".join(f"<li>{e(o['handle'])} <span>{o['patches']} patches, {o['stars']} stars</span></li>" for o in sk["openers"]) or "<li class=none>Nobody yet.</li>"
-    active = "".join(f"<li>{e(h['handle'])} <span>{h['leads_vetted']} vetted</span></li>" for h in b["most_active"]) or "<li class=none>No hunters yet.</li>"
-    cv = sk["coverage"]; pct = cv["percent_of_tess_catalogued"]; mp = cv["percent_of_mapped_patches"]
+    sk = sky.summary(); st = sk["totals"]; cv = sk["coverage"]; pct = cv["percent_of_tess_catalogued"]
+    # One row per registered handle, matched without regard to case; practice and unregistered names are left out.
+    who = {h.lower(): {"handle": h, "stars": 0, "found": 0, "vetted": 0} for h in leads.handles()}
+    for o in sk["openers"]:
+        r = who.get((o["handle"] or "").lower())
+        if r:
+            r["stars"] += o["stars"] or 0; r["found"] += o["leads"] or 0
+    for h in b["most_active"]:
+        r = who.get(h["handle"].lower())
+        if r:
+            r["vetted"] += h["leads_vetted"]
+    ranked = sorted(who.values(), key=lambda r: (-r["stars"], -r["vetted"], r["handle"].lower()))
+    lead_rows = "".join(f"<tr><td>{n}</td><td>{e(r['handle'])}</td><td>{r['stars']:,}</td><td>{r['found']}</td><td>{r['vetted']}</td></tr>"
+                        for n, r in enumerate(ranked, 1)) or '<tr><td colspan="5" class="none">No planet hunters yet.</td></tr>'
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Kepler board</title><style>
-:root{{--bg:#fff;--fg:#1b1b1b;--mut:#565c65;--line:#dfe1e2;--tint:#f0f0f0;--pri:#005ea2;--pri-dk:#1a4480;--info:#e7f6f8;--info-b:#00bde3;--gold:#ffbe2e}}
-*{{box-sizing:border-box}} body{{background:var(--bg);color:var(--fg);font:17px/1.5 "Public Sans","Source Sans Pro","Helvetica Neue",Helvetica,Arial,sans-serif;margin:0}}
-header{{background:var(--pri-dk);color:#fff;padding:20px 16px;border-bottom:4px solid var(--gold)}} header div,main{{max-width:960px;margin:0 auto}}
-header b{{font-size:22px;letter-spacing:.2px}} header span{{display:block;font-size:15px;opacity:.9}}
-main{{padding:24px 16px 48px}} h1{{font-size:32px;line-height:1.2;margin:8px 0 4px}} h2{{font-size:22px;margin:40px 0 8px;padding-bottom:6px;border-bottom:1px solid var(--line)}}
-p.sub{{color:var(--mut);margin:0 0 24px;max-width:68ch}}
-.cov{{background:var(--tint);border-left:8px solid var(--pri);padding:20px}} .cov .lab{{font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--mut)}}
-.cov .big{{font-size:56px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums;margin:4px 0 12px}}
-.bar{{height:40px;background:#fff;border:2px solid var(--fg);position:relative}} .bar i{{display:block;height:100%;background:var(--pri);min-width:3px}}
-.bar.sm{{height:16px;border-width:1px}} .scale{{display:flex;justify-content:space-between;font-size:14px;color:var(--mut);margin-top:4px}}
-.cov p{{margin:12px 0 0;font-size:15px;max-width:72ch}} .cov .two{{margin-top:20px;font-size:15px}} .cov .two b{{font-variant-numeric:tabular-nums}}
-.tiles{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;margin-top:24px}}
-.tile{{border:1px solid var(--line);border-top:4px solid var(--pri);padding:12px 16px}} .tile b{{display:block;font-size:32px;font-variant-numeric:tabular-nums}} .tile span{{color:var(--mut);font-size:15px}}
-.wrap{{overflow-x:auto}} table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:16px}}
-th,td{{text-align:left;padding:10px 12px;border:1px solid var(--line);white-space:nowrap}} th{{background:var(--tint);font-weight:700}} tr:nth-child(odd) td{{background:#fafafa}}
-.none{{color:var(--mut)}} ul{{list-style:none;padding:0;columns:2;margin:0}} li{{padding:4px 0}} li span{{color:var(--mut);font-size:15px}}
-.note{{background:var(--info);border-left:8px solid var(--info-b);padding:16px;font-size:15px;margin-top:40px}}
-@media (max-width:560px){{.cov .big{{font-size:40px}} ul{{columns:1}}}}</style></head><body>
+:root{{--fg:#1b1b1b;--mut:#565c65;--line:#dfe1e2;--tint:#f0f0f0;--pri:#005ea2;--pri-dk:#1a4480;--gold:#ffbe2e}}
+*{{box-sizing:border-box}} body{{background:#fff;color:var(--fg);font:17px/1.5 "Public Sans","Source Sans Pro","Helvetica Neue",Helvetica,Arial,sans-serif;margin:0}}
+header{{background:var(--pri-dk);color:#fff;padding:20px 16px;border-bottom:4px solid var(--gold)}} header div,main{{max-width:800px;margin:0 auto}}
+header b{{font-size:22px}} header span{{display:block;font-size:15px;opacity:.9}} main{{padding:32px 16px 48px}}
+.lab{{font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--mut)}}
+.big{{font-size:64px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums;margin:4px 0 12px}}
+.bar{{height:44px;border:2px solid var(--fg)}} .bar i{{display:block;height:100%;background:var(--pri);min-width:3px}}
+.cap{{color:var(--mut);font-size:15px;margin:8px 0 0}} h2{{font-size:22px;margin:48px 0 12px}}
+.wrap{{overflow-x:auto}} table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}}
+th,td{{text-align:right;padding:10px 12px;border:1px solid var(--line);white-space:nowrap}} th{{background:var(--tint)}}
+th:nth-child(2),td:nth-child(2){{text-align:left;width:100%}} .none{{color:var(--mut);text-align:left}}
+@media (max-width:560px){{.big{{font-size:44px}}}}</style></head><body>
 <header><div><b>Kepler MCP</b><span>Generative Experiences</span></div></header><main>
-<h1>Search coverage and planet candidates</h1><p class="sub">Progress of the volunteer transit search of NASA TESS full-frame images. Updated on every page load.</p>
-<section class="cov" aria-label="TESS data catalogued"><div class="lab">TESS data catalogued</div><div class="big">{pct:.4f}%</div>
+<div class="lab">TESS data catalogued</div><div class="big">{pct:.4f}%</div>
 <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{pct}" aria-label="Share of TESS data catalogued"><i style="width:{pct}%"></i></div>
-<div class="scale"><span>0%</span><span>50%</span><span>100%</span></div>
-<p>{st['stars_searched']:,} stars searched. {cv['fields_mapped']:,} of {cv['fields_total']:,} fields mapped. A field is one detector of one Sector for one star type (red, orange or yellow dwarfs);
-the total assumes about {cv['tess_sectors']} public Sectors. A partly searched field counts in proportion. Sectors overlap on the sky, so this is a share of TESS data, not of sky area.</p>
-<div class="two"><b>{mp:.1f}%</b> of mapped patches searched ({st['searched']:,} of {st['patches']:,})
-<div class="bar sm" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{mp}" aria-label="Share of mapped patches searched"><i style="width:{mp}%"></i></div></div></section>
-<div class="tiles"><div class="tile"><b>{b['leads_surviving']}</b><span>planet candidates</span></div>
-<div class="tile"><b>{b['leads_open']}</b><span>signals awaiting vetting</span></div><div class="tile"><b>{b['leads_cleared']}</b><span>signals ruled out</span></div>
-<div class="tile"><b>{b['hunters']}</b><span>planet hunters</span></div></div>
-<h2>Planet candidates</h2><div class="wrap"><table><tr><th>Star</th><th>Period</th><th>Depth</th><th>Vetted by</th></tr>{rows(b['surviving'], 'vetted_by')}</table></div>
-<h2>Awaiting second vet</h2><div class="wrap"><table><tr><th>Star</th><th>Period</th><th>Depth</th><th>First vet</th></tr>{rows(b['awaiting_second_vet'], 'first_vet_by')}</table></div>
-<h2>Coverage by field</h2><div class="wrap"><table><tr><th>Field</th><th>Patches searched</th><th>Stars</th><th>Signals found</th></tr>{cover}</table></div>
-<h2>Patches searched by</h2><ul>{openers}</ul>
-<h2>Signals vetted by</h2><ul>{active}</ul>
-<p class="note">{e(b['note'])} A signal is listed as a planet candidate after two independent candidate verdicts and agreement from the server's own tests.</p>
+<p class="cap">{st['stars_searched']:,} stars searched</p>
+<h2>Leaderboard</h2><div class="wrap"><table><tr><th>#</th><th>Planet hunter</th><th>Stars searched</th><th>Signals found</th><th>Signals vetted</th></tr>{lead_rows}</table></div>
 </main></body></html>"""
     return HTMLResponse(page)
 
