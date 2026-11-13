@@ -14,7 +14,7 @@ def observed_sectors(tic, ra, dec):
     return sorted(set(int(s) for s in tess_stars2px_function_entry(tic, ra, dec)[3]))
 
 
-def recover(ra, dec, sectors, P0, t00, dur0, depth0, cutout=15, loader=None, log=lambda m: None, flat_fn=None):
+def recover(ra, dec, sectors, P0, t00, dur0, depth0, cutout=15, loader=None, log=lambda m: None, flat_fn=None, on_sector=None):
     """P0, t00, dur0 in days (t00 in the light curve's time system, BTJD); depth0 in ppm.
 
     loader(sector) -> TPF or None; defaults to the MAST S3 cubes.
@@ -25,12 +25,18 @@ def recover(ra, dec, sectors, P0, t00, dur0, depth0, cutout=15, loader=None, log
         loader = lambda s: get_tpf(ra, dec, s, cutout, "s3")
     stitched = None
     per_sector = []
+
+    def add(row):
+        per_sector.append(row)
+        if on_sector is not None:
+            on_sector(dict(row))
+
     flats = []
     for s in sectors:
         try:
             tpf = loader(s)
             if tpf is None:
-                per_sector.append(dict(sector=s, status="no cube")); log(f"  sector {s}: no cube"); continue
+                add(dict(sector=s, status="no cube")); log(f"  sector {s}: no cube"); continue
             cad_min = float(np.nanmedian(np.diff(tpf.time.value)) * 1440)
             if flat_fn is not None:
                 flat = flat_fn(tpf)
@@ -42,12 +48,12 @@ def recover(ra, dec, sectors, P0, t00, dur0, depth0, cutout=15, loader=None, log
                     lc, raw, aper = _central_aperture(tpf)
                 flat = P.mask_jitter(P.flatten(P.clean(lc), 33), 6, 3)
             if len(flat) < 300:
-                per_sector.append(dict(sector=s, status="too few cadences", cadence_min=cad_min)); continue
+                add(dict(sector=s, status="too few cadences", cadence_min=cad_min)); continue
             r = P.search(flat, min_period=P0 * 0.97, max_period=P0 * 1.03, n_periods=3000,
                          min_duration_hours=0.5, max_duration_hours=max(0.75, min(max(4.0, dur0 * 24 * 2), 0.5 * P0 * 24)), duration_step_hours=0.25)
             v = P.vet(flat, r.period, r.t0, r.duration)
             noise = float(np.nanstd(flat.flux.value)) * 1e6
-            per_sector.append(dict(sector=s, status="ok", cadence_min=cad_min, n=len(flat), noise_ppm=noise,
+            add(dict(sector=s, status="ok", cadence_min=cad_min, n=len(flat), noise_ppm=noise,
                                    period=r.period, t0=r.t0, duration_h=r.duration * 24, depth_ppm=r.depth * 1e6,
                                    snr=r.snr, n_transits=v["n_transits"], odd=v["odd_depth_ppm"], even=v["even_depth_ppm"],
                                    err=v["depth_err_ppm"], secondary=v["secondary_depth_ppm"]))
@@ -55,7 +61,7 @@ def recover(ra, dec, sectors, P0, t00, dur0, depth0, cutout=15, loader=None, log
             flats.append(flat)
             log(f"  sector {s} ({cad_min:.0f}-min): P={r.period:.4f} depth={r.depth*1e6:.0f} ppm snr={r.snr:.1f} transits={v['n_transits']}")
         except Exception as e:
-            per_sector.append(dict(sector=s, status=f"error: {type(e).__name__}: {str(e)[:60]}")); log(f"  sector {s}: {type(e).__name__}: {e}")
+            add(dict(sector=s, status=f"error: {type(e).__name__}: {str(e)[:60]}")); log(f"  sector {s}: {type(e).__name__}: {e}")
 
     ps = pd.DataFrame(per_sector)
     ok = ps[ps.status == "ok"] if "status" in ps else ps.iloc[0:0]

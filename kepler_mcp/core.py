@@ -585,7 +585,7 @@ def _vet_tests(depth_ppm, err, v, duration_h, max_dur, cad, period_d, c, locatio
         tests.append({"test": "difference image", "measured": f"peak {dpx:.1f} px from target ({snr:.0f} sigma)", "result": "pass" if dpx <= 0.75 else "FAIL"})
     others = [n for n in neighbor_rows if not n["is_target"]]
     mimic = [n for n in others if n.get("can_fake_dip")]
-    tests.append({"test": "neighbours", "measured": f"{len(others)} within 3 px, {len(mimic)} could mimic the signal",
+    tests.append({"test": "neighbours", "measured": f"{len(others)} within 3 px, {len(mimic)} could mimic",
                   "result": "FAIL" if location == "blended" else "--" if mimic else "pass"})
     return tests
 
@@ -666,6 +666,83 @@ def _record(star_row, joint, agree, usable, sectors):
     }
 
 
+def _home_sector(flats, period, t0, dur):
+    """The Sector whose light curve contains the input epoch and shows the signal there at 4 sigma, or None."""
+    for flat in flats:
+        t = flat.time.value
+        if t.min() - period <= t0 <= t.max() + period:
+            depth, err, n_in = _box_stats(t, flat.flux.value, period, t0, dur)
+            if depth is not None and depth / err >= 4:
+                return int(flat.meta.get("SECTOR", -1))
+    return None
+
+
+def _local_checks(flats, ok_rows, depth0):
+    """Agreement judged Sector by Sector at each Sector's own best-fit ephemeris, for when the Sectors cannot be phased together.
+    Returns (checks, agree, contradict, depth_mismatch)."""
+    rows = {int(x["sector"]): x for x in ok_rows}
+    checks, agree, contradict, mismatch = [], [], [], []
+    for flat in flats:
+        sec = int(flat.meta.get("SECTOR", -1))
+        x = rows.get(sec)
+        if not x:
+            continue
+        depth, err, n_in = _box_stats(flat.time.value, flat.flux.value, x["period"], x["t0"], x["duration_h"] / 24)
+        if depth is None:
+            checks.append({"sector": sec, "result": "no_transit_covered"}); continue
+        ratio = depth / depth0 if depth0 else float("nan")
+        # 5 sigma, not 4: each Sector's ephemeris was chosen by a search, so the bar allows for that choice
+        if depth / err >= 5 and 0.5 <= ratio <= 2.0:
+            res = "agrees"; agree.append(sec)
+        elif depth / err >= 5 and ratio > 2.0:
+            res = "depth_mismatch"; mismatch.append(sec)
+        elif depth0 / err >= 5 and depth < 0.4 * depth0:
+            res = "contradicts"; contradict.append(sec)
+        else:
+            res = "too_noisy_to_tell"
+        checks.append({"sector": sec, "depth_ppm": depth, "box_scatter_ppm": err, "depth_sigma": depth / err, "expected_sigma": depth0 / err,
+                       "n_in_transit": n_in, "result": res, "basis": "this Sector's own best-fit ephemeris"})
+    return checks, sorted(agree), sorted(contradict), sorted(mismatch)
+
+
+def followup_table(tic, period_d, sectors, rows, checks=None, joint=None, status=None, n_agree=0, usable=0, elapsed_s=0.0, aliased=False, running=False):
+    """The follow-up readback: one row per Sector. Live while the job runs (rows fill in), final once it is done."""
+    by_sec = {int(r["sector"]): r for r in rows if r.get("sector") is not None}
+    verdicts = {int(c["sector"]): c for c in (checks or [])}
+    words = {"agrees": "agrees", "contradicts": "CONTRADICTS", "too_noisy_to_tell": "too noisy to tell", "no_transit_covered": "no transit covered",
+             "depth_mismatch": "detected, depth differs"}
+    body, started = [], False
+    for sec in sectors:
+        r = by_sec.get(sec)
+        if r is None:
+            body.append([sec, "--", "running..." if (running and not started) else "waiting"]); started = True
+            continue
+        if r.get("status") != "ok":
+            st = str(r.get("status", ""))
+            body.append([sec, "--", "no public data" if st == "no cube" else "too few cadences" if st.startswith("too few") else "not readable"])
+            continue
+        cad = r.get("cadence_min") or 0
+        cadence = f"{cad:.0f} min" if cad >= 5 else f"{cad * 60:.0f} s"
+        c = verdicts.get(sec)
+        if c and c.get("depth_ppm") is not None:
+            last = words.get(c["result"], c["result"])
+            body.append([sec, cadence, R.num(c["depth_ppm"]), f"{c['depth_sigma']:.1f}", last])
+        else:
+            seen = (r.get("snr") or 0) >= 7
+            body.append([sec, cadence, R.num(r.get("depth_ppm")), f"{(r.get('snr') or 0):.1f}", ("detected" if seen else "not detected") if not checks else words.get((c or {}).get("result"), "--")])
+    head = R.header(R.join("FOLLOW-UP", f"TIC {tic}", f"P = {period_d:.4f} d"), R.clock(elapsed_s) if running else R.secs(elapsed_s))
+    cols = [("SECTOR", "r"), ("CADENCE", "l"), ("DEPTH (ppm)", "r"), ("SIGMA" if checks else "S/N", "r"), ("AT EPHEMERIS" if (checks and not aliased) else "OWN SEARCH", "l")]
+    foot = []
+    if joint:
+        foot.append(R.fit(f"STITCHED  P = {joint['period']:.6f} +/- {joint['period_err_est']:.6f} d" + R.DOT + f"T0 = {joint['t0_bjd_tdb']:.5f} BJD_TDB"))
+        foot.append(R.fit(f"          depth {R.num(joint['depth_ppm'])} +/- {R.num(joint['err'] / 2 ** 0.5)} ppm" + R.DOT + f"{joint['n_transits']} transits"))
+    if aliased:
+        foot.append("STITCHED  not phased across Sectors; no stitched ephemeris")
+    if status:
+        foot.append(R.fit("STATUS    " + R.join(status.replace("_", " "), f"recovered in {n_agree} of {usable} usable Sector{'s' if usable != 1 else ''}")))
+    return "\n".join([head, R.table("", cols, body, footer=foot)])
+
+
 def followup(tic, period_d, t0, duration_h, depth_ppm, progress=lambda m: None):
     from tesshunt.followup import recover
     s = _star_tic(tic)
@@ -679,8 +756,10 @@ def followup(tic, period_d, t0, duration_h, depth_ppm, progress=lambda m: None):
     def loader(sec):
         with _lock(tic, sec):
             return _cube(s, tic, sec, size)
+    t_call = time.time()
+    progress({"plan": {"tic": int(tic), "period_d": period_d, "depth_ppm": depth_ppm, "sectors": [int(x) for x in sectors]}})
     r = recover(s["ra"], s["dec"], sectors, period_d, t0, duration_h / 24, depth_ppm, cutout=size, loader=loader, log=progress,
-                flat_fn=lambda tpf: _build_flat(tpf, thr)[0])
+                flat_fn=lambda tpf: _build_flat(tpf, thr)[0], on_sector=lambda row: progress({"row": store.clean(row)}))
     ok, det, joint = r["ok"], r["detected"], r["joint"]
     usable, recovered = len(ok), len(det)
     # Fixed-ephemeris check: measure the depth in each sector at the stitched period and epoch. No search, so no
@@ -706,10 +785,27 @@ def followup(tic, period_d, t0, duration_h, depth_ppm, progress=lambda m: None):
         jd, je, _ = _box_stats(st.time.value, st.flux.value, Pj, tj, dj) if st is not None else (None, None, 0)
         joint["depth_sigma_empirical"] = (jd / je) if jd is not None else None
     joint_sigma = (joint or {}).get("depth_sigma_empirical") or 0.0
+    # Alias guard. The signal was measured at the input ephemeris in the Sector that contains its epoch. If that Sector
+    # contradicts the stitched ephemeris, or any Sector whose own search found the signal does, the refinement has locked
+    # onto an alias of the period and the stitched numbers describe nothing real.
+    found = [int(x) for x in det.sector.tolist()] if recovered else []
+    home = _home_sector(r["flats"], period_d, t0, duration_h / 24)
+    mismatch = []
+    aliased = False
+    if joint and contradict:
+        # A Sector only truly contradicts if the signal is also missing at that Sector's own best-fit ephemeris.
+        # If it is there locally, the Sectors simply could not be phased together.
+        l_checks, l_agree, l_contra, l_mis = _local_checks(r["flats"], ok.to_dict("records"), depth_ppm)
+        seen_locally = set(l_agree) | set(l_mis) | set(found) | ({home} if home is not None else set())
+        if set(contradict) & seen_locally:
+            aliased = True
+            checks, agree, contradict, mismatch = l_checks, l_agree, l_contra, l_mis
     if usable == 0:
         status = "no_usable_sectors"
     elif usable == 1 or not joint:
         status = "single_sector_only"
+    elif aliased:
+        status = "does_not_repeat" if contradict else "repeats" if len(agree) >= 2 else "inconclusive"
     elif contradict:
         status = "does_not_repeat"
     elif len(agree) >= 2 and joint_sigma >= 7:
@@ -727,7 +823,15 @@ def followup(tic, period_d, t0, duration_h, depth_ppm, progress=lambda m: None):
                           "it contradicts when it had the sensitivity (expected over 5 sigma) but shows under 40% of the depth. "
                           "repeats = at least 2 agree, none contradict, and the stitched dip is over 7 sigma; not_significant = stitched dip under 5 sigma",
            "per_sector": r["per_sector"].to_dict("records"), "joint": joint, "time_note": TIME_NOTE, "caveats": [CANDIDATE_NOTE]}
-    if joint:
+    out["stitched_ephemeris_reliable"] = not aliased
+    out["sectors_depth_mismatch"] = mismatch
+    if aliased:
+        out["caveats"].insert(0, f"the Sectors could not be phased together: the stitched period ({joint['period']:.6f} d) loses a signal that individual Sectors show. "
+                                 "Agreement is judged at each Sector's own best-fit ephemeris, and no stitched period, epoch or record is reported")
+    if mismatch:
+        out["caveats"].insert(0, f"Sector(s) {mismatch} show the signal more than twice as deep or less than half as deep as the input: different dilution by "
+                                 "neighbours in that Sector's aperture, or a blended eclipsing binary. Check neighbours before trusting the depth")
+    if joint and not aliased:
         err = joint["err"]
         if joint.get("has_secondary"):
             # A stitched light curve can show a deep off-phase box that comes from one bad stretch of one sector.
@@ -765,11 +869,16 @@ def followup(tic, period_d, t0, duration_h, depth_ppm, progress=lambda m: None):
     if status == "inconclusive":
         out["caveats"].insert(0, "fewer than two sectors show the dip at 4 sigma and none contradicts it")
     out["summary"] = f"{out['status']}. " + SUMMARY_FOLLOW.get(out["status"], "") + f" Recovered in {len(agree)} of {usable} Sector(s); {len(contradict)} contradict."
-    if joint:
+    if joint and aliased:
+        out["summary"] += " Stitched period is an alias and is not reported; agreement is from each Sector's own search."
+    elif joint:
         joint["t0_bjd_tdb"] = bjd(joint["t0"])
         out["summary"] += (f" Stitched ephemeris: P = {joint['period']:.6f} +/- {joint['period_err_est']:.6f} d, T0 = {joint['t0_bjd_tdb']:.5f} BJD_TDB, "
                            f"depth {joint['depth_ppm']:.0f} ppm, {joint['n_transits']} transits.")
         out["record"] = _record(s, joint, agree, usable, sectors)
+    out["display"] = followup_table(int(tic), period_d, [int(x) for x in sectors], out["per_sector"], checks=checks,
+                                    joint=None if (aliased or not joint) else joint, status=out["status"], n_agree=len(agree), usable=usable,
+                                    elapsed_s=time.time() - t_call, aliased=aliased)
     out["next_actions"] = []
     png = None
     if r["stitched"] is not None and joint:

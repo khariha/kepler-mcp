@@ -213,10 +213,13 @@ async def job_status(job_id: str, ctx: Context, wait_s: float = 20.0) -> list:
         raise ToolError("job_id is the 20-character id returned by followup_start")
     sid = _sid(ctx)
     deadline = time.time() + max(0.0, min(float(wait_s), 25.0))
-    last = None
+    last = None; first_rows = None
     while True:
         state, hit = store.job_get("followup", job_id)
-        if hit is not None or state["state"] in ("failed", "unknown") or time.time() >= deadline:
+        n_rows = len(state.get("rows") or [])
+        if first_rows is None:
+            first_rows = n_rows
+        if hit is not None or state["state"] in ("failed", "unknown") or time.time() >= deadline or n_rows > first_rows:
             break
         if state.get("progress") and state["progress"] != last:
             last = state["progress"]
@@ -227,7 +230,11 @@ async def job_status(job_id: str, ctx: Context, wait_s: float = 20.0) -> list:
         await anyio.sleep(1.0)
     if hit is None:
         if state["state"] in ("queued", "running"):
-            state = state | {"keep_polling": True, "summary": f"Follow-up {state['state']}" + (f": {state['progress']}" if state.get("progress") else "."),
+            plan = (state.get("plan") or {}).get("plan")
+            if plan:
+                state["display"] = core.followup_table(plan["tic"], plan["period_d"], plan["sectors"], state.get("rows") or [],
+                                                       elapsed_s=state["elapsed_s"], running=True)
+            state = state | {"keep_polling": True, "summary": f"Follow-up {state['state']}: {len(state.get('rows') or [])} of {len(plan['sectors']) if plan else '?'} Sectors done.",
                              "next_actions": [core.act("job_status", "REQUIRED now, in this same turn: the follow-up is still running", job_id=job_id)]}
         return [state]
     result, png = hit

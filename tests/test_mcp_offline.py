@@ -492,3 +492,31 @@ def test_submit_vet_end_to_end_with_cached_evidence(tmp_data):
     assert r3["lead_status"] == "cleared" and r3["disposition"] == "FA" and "false alarm" in r3["summary"]
     r4 = anyio.run(lambda: server.report_verdict(tic=5, verdict="inconclusive", reason="n/a", ctx=None))
     assert r4["recorded"] and r4["disposition"] is None
+
+
+def test_alias_guard_helpers():
+    """Two Sectors far apart that each show the transit. Judged at the wrong stitched period the first would contradict;
+    judged at each Sector's own ephemeris both agree, and a Sector five times deeper is reported as a depth mismatch."""
+    import lightkurve as lk
+    from kepler_mcp import core
+    rng = np.random.default_rng(3)
+    def sector(t_start, depth, sec, period=3.0, t0=1.0, dur=0.1, n=3000):
+        t = np.linspace(t_start, t_start + 25, n); f = 1 + rng.normal(0, 0.0015, n)
+        f[np.abs(((t - t0 + period / 2) % period) - period / 2) < dur / 2] -= depth
+        c = lk.LightCurve(time=t, flux=f); c.meta["SECTOR"] = sec
+        return c
+    a, b, d = sector(0, 0.003, 7), sector(2000, 0.003, 33), sector(2700, 0.015, 87)
+    assert core._home_sector([a, b], 3.0, 1.0, 0.1) == 7
+    assert core._home_sector([b], 3.0, 1.0, 0.1) is None                              # the epoch is not in that Sector
+    wrong = 3.0 * (1 + 0.0007)                                                         # drifts by half a transit over a few orbits
+    depth_wrong, err, _ = core._box_stats(b.time.value, b.flux.value, wrong, 1.0, 0.1)
+    assert depth_wrong / err < 4                                                       # phased with a wrong period, Sector 33 loses the signal
+    rows = [{"sector": 7, "period": 3.0, "t0": 1.0, "duration_h": 2.4}, {"sector": 33, "period": 3.0, "t0": 1.0, "duration_h": 2.4},
+            {"sector": 87, "period": 3.0, "t0": 1.0, "duration_h": 2.4}]
+    checks, agree, contradict, mismatch = core._local_checks([a, b, d], rows, 3000.0)
+    assert agree == [7, 33] and contradict == [] and mismatch == [87]
+    quiet = sector(3500, 0.0, 99)
+    _, agree2, contradict2, _ = core._local_checks([a, quiet], rows[:1] + [{"sector": 99, "period": 3.0, "t0": 1.0, "duration_h": 2.4}], 3000.0)
+    assert agree2 == [7] and contradict2 == [99]                                       # a Sector that could have seen it and did not
+    tbl = core.followup_table(1, 3.0, [7, 33, 87], [{"sector": 7, "status": "ok", "cadence_min": 30, "depth_ppm": 3000, "snr": 9}], running=True)
+    _narrow(tbl); assert "running..." in tbl and "waiting" in tbl and "T+00:00" in tbl

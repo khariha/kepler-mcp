@@ -128,13 +128,19 @@ def job_start(tool, k, fn):
         j = _jobs.get(k)
         if j and j["state"] in ("queued", "running"):
             return j["state"]
-        _jobs[k] = j = {"state": "queued", "tool": tool, "started": time.time(), "error": None, "progress": "", "steps": 0}
+        _jobs[k] = j = {"state": "queued", "tool": tool, "started": time.time(), "error": None, "progress": "", "steps": 0, "plan": None, "rows": []}
 
     def work():
         j["state"] = "running"
         try:
             def note(m):
-                j["progress"] = str(m).strip()[:200]; j["steps"] += 1
+                if isinstance(m, dict):                      # structured progress: a plan, or one finished row
+                    if "plan" in m:
+                        j["plan"] = m
+                    if "row" in m:
+                        j["rows"].append(m["row"]); j["steps"] += 1
+                    return
+                j["progress"] = str(m).strip()[:200]
             result, png = fn(note)
             cache_put(tool, k, clean(result), png)
             j["state"] = "done"
@@ -152,7 +158,8 @@ def job_get(tool, k):
     j = _jobs.get(k)
     if not j:
         return {"state": "unknown"}, None
-    out = {"state": j["state"], "elapsed_s": round(time.time() - j["started"]), "progress": j["progress"], "steps_done": j["steps"]}
+    out = {"state": j["state"], "elapsed_s": round(time.time() - j["started"]), "progress": j["progress"], "steps_done": j["steps"],
+           "plan": j.get("plan"), "rows": list(j.get("rows") or [])}
     if j["error"]:
         out["error"] = j["error"]
     return out, None
