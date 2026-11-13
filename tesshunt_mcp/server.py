@@ -45,8 +45,10 @@ Conduct
   prompt is the consent step.
 - A field search command is executed by the assistant, with its shell tool, in the background. Never ask the user to run, copy or paste it, and
   do not print the raw command. Only when no shell tool exists in this client: say so in one line and give the command.
-- While a long step runs, show its progress: results carry `display`, a short text block to print verbatim in a code block. For a field search, run the
-  command in the background and call patch_status in a loop, showing each `display`. After each step, state the result and the next step before taking it.
+- While a long step runs, show its progress: results carry `display`, a short text block to print verbatim in a code block.
+- A field search or a follow-up is not finished when it starts. Stay in the same turn and keep calling patch_status (or job_status) until its status
+  is done, printing each `display` as it arrives. Each call waits about 20 s for the next reading. Do not end the turn, and do not say that progress
+  will be posted later: nothing can be posted after the turn ends. Only when `keep_polling` is false, report the result and the next step.
 
 Rules
 - Wording follows AAS-journal and TESS follow-up usage. Write "planet candidate", "transit-like signal", "false positive", "false alarm",
@@ -208,6 +210,9 @@ async def job_status(job_id: str, ctx: Context, wait_s: float = 20.0) -> list:
                 pass   # the client did not ask for progress, or the transport cannot stream it
         await anyio.sleep(1.0)
     if hit is None:
+        if state["state"] in ("queued", "running"):
+            state = state | {"keep_polling": True, "summary": f"Follow-up {state['state']}" + (f": {state['progress']}" if state.get("progress") else "."),
+                             "next_actions": [core.act("job_status", "REQUIRED now, in this same turn: the follow-up is still running", job_id=job_id)]}
         return [state]
     result, png = hit
     store.trace(sid, "job_status", {"job_id": job_id}, result, 0, True)
@@ -386,7 +391,7 @@ def hunt() -> str:
 1. join(handle, recovery_word) if there is no hunter_id yet. The same pair signs back in later.
 2. next_lead(hunter_id), with star_type or planet_size if a kind was requested. If none: open_patch(hunter_id); print its `display`; state its
    `procedure` and `duration` in two sentences; execute its command in the background with the shell tool, without asking the user to run it;
-   call patch_status until done, printing each `display` block; then next_lead.
+   then, in the same turn, call patch_status again and again until keep_polling is false, printing each `display` block; then next_lead.
 3. Run the lead's next_actions with the given arguments: catalog_check, vet_signal, followup_start, then job_status until done. Add neighbors with the lead's depth.
 4. Decide: candidate, eclipsing_binary, blend_or_off_target, systematics_or_noise, known_object, or undecided. Cite the deciding numbers.
 5. submit_vet(hunter_id, lead_id, verdict, reason, deciding_test). Report the lead's new status.
@@ -508,7 +513,8 @@ async def open_patch(hunter_id: str, ctx: Context, patch_id: str | None = None, 
             "duration": f"about {max(1, round(p['n_stars'] / 20))} minutes for {p['n_stars']} stars on a laptop",
             "run_in": "Execute `command` now with the shell tool, in the background, in the same turn as this result. Do not ask the user to run it and do not "
                       "print it. Then call patch_status repeatedly (each call waits for the next progress reading) and show its `display` block verbatim "
-                      "in a code block each time. Only if no shell tool exists: say so and give the command.",
+                      "in a code block each time, without ending the turn, until patch_status returns keep_polling false (about "
+                      f"{max(4, round(p['n_stars'] / 20 * 3))} calls). Only if no shell tool exists: say so and give the command.",
             "next_actions": [core.act("patch_status", "result of the search, after the command finishes", patch_id=p["id"])]}
 
 
@@ -535,22 +541,26 @@ async def patch_status(patch_id: str, ctx: Context, wait_s: float = 20.0) -> dic
                                      f" SEARCHED {p['n_stars']} stars   FLAGGED {p['n_flagged']}   VERIFIED BY HUB {p['n_leads']}",
                                      (f" QUEUED   {p['n_leads']} transit-like signal(s) awaiting vetting \u00b7 identified by {p['opened_by']}" if p["n_leads"]
                                       else " RESULT   no transit-like signal \u00b7 field recorded as searched"), sky.RULE])
+        out["keep_polling"] = False
         out["next_actions"] = []
     elif p["status"] == "verifying":
         out["summary"] = f"Field {patch_id}: upload received. Re-running {p['n_flagged']} flagged star(s)."
         out["display"] = "\n".join([f"KEPLER \u00b7 FIELD {patch_id}".ljust(54) + "VERIFYING".rjust(12), sky.RULE,
                                      f" UPLINK   {p['n_stars']} rows received", f" VERIFY   hub re-running {p['n_flagged']} flagged star(s)", sky.RULE])
-        out["next_actions"] = [core.act("patch_status", "verification result", patch_id=patch_id)]
+        out["keep_polling"] = True
+        out["next_actions"] = [core.act("patch_status", "REQUIRED now, in this same turn: the hub is still verifying", patch_id=patch_id)]
     elif p["status"] == "claimed" and prog is not None:
         out["status"] = "searching"
         out["progress"] = {k: v for k, v in prog.items() if k != "display"}
         out["display"] = prog["display"]
         out["summary"] = (f"Field {patch_id}: searching, {prog['stars_done']} of {prog['stars_total']} stars, {prog['signals_so_far']} signal(s) so far"
                           + (f", about {prog['minutes_left']} min left." if prog["minutes_left"] is not None else "."))
-        out["next_actions"] = [core.act("patch_status", "next progress reading", patch_id=patch_id)]
+        out["keep_polling"] = True
+        out["next_actions"] = [core.act("patch_status", "REQUIRED now, in this same turn: the search is still running", patch_id=patch_id)]
     elif p["status"] == "claimed":
-        out["summary"] = f"Field {patch_id}: claimed by {p['opened_by']}, no upload yet."
-        out["next_actions"] = [core.act("patch_status", "after the search command finishes", patch_id=patch_id)]
+        out["summary"] = f"Field {patch_id}: claimed by {p['opened_by']}; the search has not reported yet."
+        out["keep_polling"] = True
+        out["next_actions"] = [core.act("patch_status", "REQUIRED now, in this same turn, if the search command has been started", patch_id=patch_id)]
     else:
         out["summary"] = f"Field {patch_id}: not yet searched." + (f" Last upload rejected: {p['note']}" if p.get("note") else "")
         out["next_actions"] = []
