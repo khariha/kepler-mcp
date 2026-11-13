@@ -30,10 +30,19 @@ def _http(url, payload=None, timeout=120):
         raise SystemExit(f"error: hub unreachable at {url.split('/patch')[0]} ({e.reason})")
 
 
-def _beat(hub, patch, hunter, done, total, signals, latest=None):
+def telemetry(r):
+    """One short line per finished star for the live readout."""
+    tm = f"T {r['tmag']:.1f}" if r.get("tmag") is not None else "T  ?  "
+    if r.get("status") != "ok":
+        return f"TIC {r['tic']:<11} {tm}  no usable light curve"
+    rms = f"rms {r['noise_ppm'] / 1e4:.2f}%" if r.get("noise_ppm") else "rms   ?  "
+    return f"TIC {r['tic']:<11} {tm}  {rms}  " + ("TRANSIT-LIKE SIGNAL" if looks_like_a_signal(r) else "nominal")
+
+
+def _beat(hub, patch, hunter, done, total, signals, latest=None, stars=None):
     """Tell the hub how far the search has got, so the assistant can show it. Never fatal."""
     try:
-        _http(f"{hub}/patch/{patch}/progress", {"hunter": hunter, "done": done, "total": total, "signals": signals, "latest": latest}, timeout=8)
+        _http(f"{hub}/patch/{patch}/progress", {"hunter": hunter, "done": done, "total": total, "signals": signals, "latest": latest, "stars": stars or []}, timeout=8)
     except BaseException:
         pass
 
@@ -82,7 +91,7 @@ def sweep(patch, hunter, hub=DEFAULT_HUB, workers=None, say=out):
     _beat(hub, patch, hunter, len(done), len(stars), sum(looks_like_a_signal(x) for x in done.values()))
     if todo:
         with ProcessPoolExecutor(workers) as ex, open(path, "a") as f:
-            failures = 0
+            failures = 0; fresh = []
             for fut in as_completed([ex.submit(search_one, (s, sector)) for s in todo]):
                 try:
                     r = fut.result()
@@ -93,10 +102,15 @@ def sweep(patch, hunter, hub=DEFAULT_HUB, workers=None, say=out):
                     continue
                 done[r["tic"]] = r
                 f.write(json.dumps(r) + "\n"); f.flush()
+                fresh.append(telemetry(r))
+                if len(fresh) >= 3 and not looks_like_a_signal(r):
+                    _beat(hub, patch, hunter, len(done), len(stars), sum(looks_like_a_signal(x) for x in done.values()), stars=fresh)
+                    fresh = []
                 if looks_like_a_signal(r):
                     line = f"TIC {r['tic']}: depth {r['depth_ppm']/1e4:.2f}%, P = {r['period_d']:.3f} d, {int(r['n_transits'])} transits, S/N {r['snr']:.1f}"
                     say(f"   \u25C9 signal  {line}")
-                    _beat(hub, patch, hunter, len(done), len(stars), sum(looks_like_a_signal(x) for x in done.values()), "signal " + line)
+                    _beat(hub, patch, hunter, len(done), len(stars), sum(looks_like_a_signal(x) for x in done.values()), "signal " + line, stars=fresh)
+                    fresh = []
                 if len(done) - last >= max(5, len(stars) // 15) or len(done) == len(stars):
                     last = len(done)
                     n_sig = sum(looks_like_a_signal(x) for x in done.values())

@@ -111,7 +111,7 @@ def test_server_registers_tools_and_guide():
     assert names == {"resolve_star", "catalog_check", "light_curve", "search_transits", "vet_signal", "neighbors", "fold_plot",
                      "followup_start", "job_status", "report_verdict", "read_guide",
                      "lesson", "join", "next_lead", "submit_vet", "board", "my_progress",
-                     "sky_map", "open_patch", "patch_status"}
+                     "sky_map", "open_patch", "patch_status", "console"}
     g = server._guide()
     import re as _re
     assert "eccentric" in g and not _re.search(r"TIC \d", g)          # the reference names no particular star
@@ -419,6 +419,10 @@ def test_live_progress_display(tmp_data):
     sky.set_progress(a, pid, 2, 3, 1, "signal TIC 1001: depth 1.01%, P = 0.455 d", now=1060)
     g = sky.progress(pid, now=1060)
     assert g["stars_done"] == 2 and g["percent"] == 66 and g["signals_so_far"] == 1 and g["minutes_left"] == 0.5
-    lines = g["display"].split("\n")
-    assert "field " + pid in lines[0] and "2/3 stars" in lines[1] and "\u2588" in lines[1] and "TIC 1001" in lines[2]
+    d = g["display"]
+    assert "FIELD " + pid in d and "2/3 stars" in d and "\u2588" in d and "TIC 1001" in d and "DOWNLINK + SEARCH" in d and "T+01:00" in d
+    sky._progress.clear(); sky.set_progress(a, pid, 0, 3, 0, now=1000)
+    assert "ACQUISITION" in sky.progress(pid, now=1001)["display"]                # something to show before the first star finishes
+    sky.set_progress(a, pid, 2, 3, 0, stars=["TIC 1000  T 13.0  rms 0.21%  nominal"], now=1060)
+    assert "nominal" in sky.progress(pid, now=1060)["display"]
     assert sky.progress(pid, now=1060 + 601) is None                   # stale readings are not shown

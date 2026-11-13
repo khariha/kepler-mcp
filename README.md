@@ -26,6 +26,7 @@ Then, in Claude: "Use Kepler to check Pi Mensae", "give me a lead to vet", or "s
 | `join(handle, recovery_word)` | register a handle or sign back in; returns the `hunter_id` credential. The same handle and word always give the same id |
 | `next_lead(hunter_id, star_type?, planet_size?)` | one unvetted lead with the arguments for the tests |
 | `submit_vet(hunter_id, lead_id, verdict, reason, ...)` | record a verdict; accepted only after the tests have run |
+| `console(hunter_id?)` | session header: link status, survey coverage, queue, signed-in handle |
 | `board()`, `my_progress(hunter_id)` | standings and one handle's tally |
 | `lesson()` | optional guided lesson on a known planet |
 
@@ -66,6 +67,8 @@ Prompts: `hunt` (procedure for vetting leads), `check_star(star)` (procedure for
 | `followup_start(...)`, `job_status(job_id)` | independent search of every observed sector (up to 12), a stitched refinement, and a sector-by-sector agreement check. `job_status` waits and streams live progress | 1-5 min |
 | `report_verdict(tic, verdict, reason)` | optional: record your final call | instant |
 | `read_guide()` | how transit signals fool you, and this server's limits | instant |
+
+**Console readouts.** `console`, `open_patch` and `patch_status` return `display`: a fixed-width text block (link status, a field card, live search progress with a bar and per-star telemetry) that the client prints verbatim. During a field search the helper reports progress to the hub, so the readout updates in the conversation.
 
 **Result contract.** Every result carries `summary` (what was measured or decided, one or two neutral sentences), `next_actions` (suggested calls as `{tool, args, why}` with complete arguments), and `caveats`. Resource `kepler://guide` is the vetting guide ([tesshunt_mcp/guide.md](tesshunt_mcp/guide.md)).
 

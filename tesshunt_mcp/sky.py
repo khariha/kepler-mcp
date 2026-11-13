@@ -203,28 +203,36 @@ def finish(pid, verified, rejected_reason=None, now=None):
 
 
 _progress = {}
+RULE = "\u2500" * 66
 
 
-def set_progress(hunter_id, pid, done, total, signals, latest=None, now=None):
-    """Heartbeat from the helper while it searches. Only the handle holding the patch may report."""
+def set_progress(hunter_id, pid, done, total, signals, latest=None, now=None, stars=None):
+    """Heartbeat from the helper while it searches. Only the handle holding the patch may report.
+    latest: a line describing a new signal. stars: short telemetry lines for stars just completed."""
     with _lock:
         with leads._db() as lc:
             me = leads._handle(lc, hunter_id)
         with _db() as c:
-            p = c.execute("select status, opened_by, n_stars from patches where id=?", (pid,)).fetchone()
+            p = c.execute("select status, opened_by, n_stars, sector, pop from patches where id=?", (pid,)).fetchone()
         if not p or p["status"] != "claimed" or p["opened_by"] != me:
             raise SkyError(f"patch {pid} is not held by this handle")
-        prev = _progress.get(pid) or {"started": now or time.time(), "signals_seen": []}
+        prev = _progress.get(pid) or {"started": now or time.time(), "signals_seen": [], "stars_seen": []}
         total = int(p["n_stars"]); done = max(0, min(int(done), total))
         seen = prev["signals_seen"]
         if latest and latest not in seen:
             seen = (seen + [str(latest)[:120]])[-5:]
-        _progress[pid] = {"started": prev["started"], "updated": now or time.time(), "done": done, "total": total,
-                          "signals": max(0, int(signals)), "signals_seen": seen}
+        recent = (prev["stars_seen"] + [str(x)[:90] for x in (stars or [])][:6])[-4:]
+        _progress[pid] = {"started": prev["started"], "updated": now or time.time(), "done": done, "total": total, "sector": p["sector"], "pop": p["pop"],
+                          "signals": max(0, int(signals)), "signals_seen": seen, "stars_seen": recent}
+
+
+def _bar(done, total, width=30):
+    full = int(width * done / max(total, 1))
+    return "\u2595" + "\u2588" * full + "\u2591" * (width - full) + "\u258f"
 
 
 def progress(pid, now=None):
-    """Live state of a running search, with a text block ready to show, or None."""
+    """Live state of a running search, with a console block ready to show, or None."""
     now = now or time.time()
     g = _progress.get(pid)
     if not g or now - g["updated"] > 600:
@@ -233,11 +241,21 @@ def progress(pid, now=None):
     elapsed = max(now - g["started"], 1e-9)
     rate = done / elapsed * 60
     left = (total - done) / rate if rate > 0 else None
-    width = 28; full = int(width * done / max(total, 1))
-    bar = "\u2595" + "\u2588" * full + "\u2591" * (width - full) + "\u258f"
-    lines = [f"\U0001F6F0  KEPLER \u00b7 field {pid} \u00b7 TESS archive downlink",
-             f"   {bar} {100 * done // max(total, 1):3d}%   {done}/{total} stars   {g['signals']} signal(s)" + (f"   {left:.1f} min left" if left is not None else "")]
-    lines += [f"   \u25C9 {s}" for s in g["signals_seen"]]
+    t = f"T+{int(elapsed) // 60:02d}:{int(elapsed) % 60:02d}"
+    head = f"KEPLER \u00b7 FIELD {pid} \u00b7 TESS SECTOR {g.get('sector', '')}".ljust(54) + t.rjust(12)
+    lines = [head, RULE]
+    if done == 0:
+        lines += [" PHASE    ACQUISITION",
+                  f" HUB      target list received \u00b7 {total} {g.get('pop', '')} stars".rstrip(),
+                  " ARCHIVE  opening link to NASA MAST \u00b7 TESS full-frame images",
+                  " SEARCH   workers starting \u00b7 first light curve in about 20 s"]
+    else:
+        lines += [" PHASE    DOWNLINK + SEARCH",
+                  f" {_bar(done, total)} {100 * done // max(total, 1):3d}%   {done}/{total} stars",
+                  f" RATE     {rate:.0f} stars/min" + (f"   REMAINING  {left:.1f} min" if left is not None else "") + f"   SIGNALS  {g['signals']}"]
+        lines += [f" \u00b7 {x}" for x in g["stars_seen"]]
+    lines += [f" \u25C9 SIGNAL  {x.replace('signal ', '')}" for x in g["signals_seen"]]
+    lines.append(RULE)
     return {"stars_done": done, "stars_total": total, "percent": 100 * done // max(total, 1), "signals_so_far": g["signals"],
             "minutes_left": round(left, 1) if left is not None else None, "stars_per_minute": round(rate, 1),
             "latest_signals": g["signals_seen"], "display": "\n".join(lines)}

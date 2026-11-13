@@ -15,6 +15,7 @@ MCP server for finding and vetting transiting planet candidates in TESS full-fra
 ## Rules
 - Output says "planet candidate", never "planet" or "discovered".
 - Vocabulary: AAS-journal and TESS follow-up usage (see the Terminology table in tesshunt_mcp/guide.md). Epochs also in BJD_TDB. No "discovered", "confirmed", "validated"; no TOI numbers; disposition codes are ours, not TFOPWG's.
+- Console readouts: `display` blocks are fixed-width, 66 columns, upper-case labels, no emoji, printed verbatim by the client. Say only what was checked: a link is ONLINE only if a probe answered.
 - Voice: instrument. Tool output is terse and neutral: no greetings, encouragement, second person, or coaching. The `lesson` tool is the one exception.
 - Result contract: every result has `summary` (neutral, one or two sentences), `next_actions` (list of {tool, args, why} built with core.act, arguments complete), and `caveats`. No prose instructions to the model inside results.
 - Tools return JSON numbers plus an optional PNG, with a `caveats` list. An archive failure raises ToolError; it is never turned into a verdict.
@@ -54,4 +55,5 @@ MCP server for finding and vetting transiting planet candidates in TESS full-fra
 - The helper's progress bar was invisible: first because piped stdout is block-buffered (print without flush), then because the client folds a running command to one line → flush every line, and report progress to the hub so patch_status can return a `display` block that the assistant prints in the conversation.
 - patch_status returned instantly before the first progress reading, so a polling client made 388 calls in 27 s → a waiting call must wait in every non-terminal state, including "no reading yet".
 - A BJD epoch came back as 2458326.0 → the JSON cleaner rounded floats to 7 significant figures → 12 significant figures; add a test whenever a new quantity needs more digits than the last one did.
+- A small model printed the search command and asked the user to "say go" → the instructions said to wait for a go-ahead, and the result described the command as something run "on the user's computer" → the assistant executes it with its shell tool in the same turn after a two-sentence explanation; the client's permission prompt is the consent. Write instructions for the weakest model: say who acts, when, and what not to do.
 
