@@ -870,6 +870,8 @@ async def board_html(request):
     lead_rows = "".join(f"<tr{' class=top' if n == 1 else ''}><td class=n>{n}</td><td>{e(r['handle'])}</td><td class=n>{r['stars']:,}</td><td class=n>{r['found']}</td><td class=n>{r['vetted']}</td></tr>"
                         for n, r in enumerate(ranked, 1)) or '<tr><td colspan="5" class="none">No planet hunters yet.</td></tr>'
     stamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+    base = PUBLIC_URL.rstrip("/") if PUBLIC_URL else (str(request.base_url).rstrip("/") if request is not None else "http://127.0.0.1:8000")
+    mcp_url = e(base + "/mcp"); add_cmd = f"claude mcp add --transport http kepler {mcp_url}"
     sectors = ", ".join(str(x) for x in sk["open_sectors"])
     # Idiom: engineering datasheet (black on paper, 14px, square, tables, dot screens). Built from scratch; no third-party CSS or fonts.
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -890,11 +892,18 @@ hr.dots{{height:1rem;border:none;margin:.25rem 0 1rem;background:radial-gradient
 table{{width:100%;border-collapse:collapse}} td,th{{height:1.85rem;line-height:1.4rem;padding:.2rem .4rem 0;border:.1rem solid #bfbfbf;text-align:left;white-space:nowrap}}
 th{{font-weight:700;border-bottom:.1rem solid #000}} .n{{text-align:right}} .kv th{{border-bottom:.1rem solid #bfbfbf;font-weight:400;color:#555;width:25%}}
 .kv{{margin-bottom:2rem}} .board{{border-left:4px solid #ffb700}} .board td:nth-child(2){{width:100%}} tr.top td{{background:rgba(0,0,0,.06)}}
+.btn{{display:inline-block;height:2rem;padding:.1rem .7rem 0;line-height:1.5rem;font:inherit;font-weight:700;color:#fff;background:#00794c;border:.1rem solid #00794c;border-radius:0;box-shadow:2px 2px #bbb;cursor:pointer;white-space:nowrap}}
+.btn:hover,.btn:focus{{background:#000;border-color:#000}} .add{{display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:.5rem}} .add span{{font-size:.85rem;color:#00794c}}
+.addt td{{white-space:normal;word-break:break-all}} .addt th{{width:8rem}}
 .wrap{{overflow-x:auto}} .none{{color:#777}} footer{{display:flex;justify-content:space-between;gap:1rem;margin-top:2rem;padding-top:.5rem;border-top:1px dashed #000;font-size:.85rem;color:#555}}
 @media (max-width:436px){{html{{font-size:12px;background:#fff}} body{{margin:0;border:none;box-shadow:none}} .kv th{{width:auto}}}}
 @media print{{html{{background:#fff}} body{{border:none;box-shadow:none;margin:0}}}}</style></head><body>
 <div class="head"><h1>Kepler MCP</h1><span>Generative Experiences</span></div>
 <div class="colorbar" aria-hidden="true"><i style="background:#000"></i><i style="background:#003f9b"></i><i style="background:#0092ff"></i><i style="background:#00c986"></i><i style="background:#ffb700"></i><i style="background:#ff4a03"></i><i style="background:#e7040f"></i></div>
+<div class="add"><button class="btn" id="add" type="button">Add Kepler MCP to Claude &rarr;</button><span id="done" class="mono" role="status"></span></div>
+<table class="kv addt"><tr><th>Claude Code</th><td id="cmd">{add_cmd}</td></tr><tr><th>Claude app</th><td>Settings &rsaquo; Connectors &rsaquo; Add custom connector &rsaquo; {mcp_url}</td></tr></table>
+<script>document.getElementById("add").onclick=function(){{var t=document.getElementById("cmd").textContent,d=document.getElementById("done");
+(navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(function(){{d.textContent="COMMAND COPIED. PASTE IN A TERMINAL."}},function(){{var r=document.createRange();r.selectNodeContents(document.getElementById("cmd"));var g=getSelection();g.removeAllRanges();g.addRange(r);d.textContent="COMMAND SELECTED. COPY IT AND PASTE IN A TERMINAL."}})}}</script>
 <h2>1. TESS data catalogued</h2><hr class="dots">
 <div class="read"><b class="mono">{cv['percent_collective']:.4f}%</b><span class="mono">collective</span></div>
 <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{cv['percent_collective']}" aria-label="Share of TESS data catalogued, prior surveys plus Kepler"><i class="prior" style="width:{cv['percent_prior_surveys']}%"></i><i style="width:{cv['percent_kepler']}%"></i></div>
