@@ -13,6 +13,8 @@ PATCH_SIZE = int(os.environ.get("KEPLER_PATCH_SIZE", 150))     # measured: a lap
 CLAIM_SECONDS = 2 * 3600
 MAX_CLAIMS = 2
 OPEN_SECTORS = [int(x) for x in os.environ.get("KEPLER_OPEN_SECTORS", "7 8").split()]
+TESS_SECTORS = int(os.environ.get("KEPLER_TESS_SECTORS", 100))   # public Sectors, approximate; the denominator of "TESS data catalogued"
+DETECTORS_PER_SECTOR = 16                                         # 4 cameras x 4 detectors
 PAUSED = os.environ.get("KEPLER_PATCHES_PAUSED", "0") == "1"
 _lock = threading.RLock()
 
@@ -329,6 +331,13 @@ def summary(sector=None, now=None):
         ready = {}
         for d in dets:
             ready[d["star_type"]] = ready.get(d["star_type"], 0) + d["unopened"]
-        return {"open_sectors": OPEN_SECTORS, "patch_size": PATCH_SIZE, "totals": tot, "unopened_by_star_type": ready, "detectors": dets,
+        # One "field" is one detector of one Sector for one star type. A partly searched field counts in proportion to its patches.
+        fields_total = TESS_SECTORS * DETECTORS_PER_SECTOR * len(POPULATIONS)
+        done_equiv = sum(d["searched"] / d["patches"] for d in dets if d["patches"])
+        coverage = {"tess_sectors": TESS_SECTORS, "fields_total": fields_total, "fields_mapped": len(dets),
+                    "fields_searched_equivalent": round(done_equiv, 4), "percent_of_tess_catalogued": round(100 * done_equiv / fields_total, 5),
+                    "percent_of_mapped_patches": round(100 * tot["searched"] / tot["patches"], 2) if tot["patches"] else 0.0,
+                    "basis": "fields = public Sectors x 16 detectors x star types; Sectors overlap on the sky, so this is a share of TESS data, not of sky area"}
+        return {"open_sectors": OPEN_SECTORS, "patch_size": PATCH_SIZE, "totals": tot, "coverage": coverage, "unopened_by_star_type": ready, "detectors": dets,
                 "detectors_being_mapped": building, "openers": openers,
                 "star_types": {k: v["finds"] for k, v in POPULATIONS.items()}}
