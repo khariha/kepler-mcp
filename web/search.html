@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kepler field search</title>
+<style>
+  :root { --bg: #fafaf7; --fg: #111; --mute: #666; --line: #ccc; --accent: #1f5fd1; --good: #1d7a3a; --bad: #b42318; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #111; --fg: #eee; --mute: #999; --line: #333; --accent: #6ea0ff; --good: #5fc27e; --bad: #f97066; } }
+  :root[data-theme="dark"] { --bg: #111; --fg: #eee; --mute: #999; --line: #333; --accent: #6ea0ff; --good: #5fc27e; --bad: #f97066; }
+  body { background: var(--bg); color: var(--fg); font: 12px/1.55 ui-monospace, Menlo, monospace; margin: 0; padding: 16px; }
+  main { max-width: 760px; margin: 0 auto; }
+  .app main { max-width: none; }
+  .app { padding: 10px; }
+  h1 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; margin: 0 0 10px; }
+  .app h1, .app .note { display: none; }
+  pre { border: 1px solid var(--line); padding: 10px 12px; white-space: pre-wrap; word-break: break-word; margin: 0 0 10px; }
+  .bar { height: 6px; background: var(--line); margin: 0 0 10px; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .note { color: var(--mute); margin: 0; }
+  .done { color: var(--good); } .err { color: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Kepler · field search</h1>
+  <div class="bar"><div id="bar"></div></div>
+  <pre id="log">starting…</pre>
+  <p class="note">This tab searches about 150 stars on your computer: it reads their pixels from NASA's public TESS archive, looks for
+  repeating transit-like dips, and sends one row of numbers per star to Kepler. Keep it open (visible) until it says done; closing it pauses
+  the search, and opening the link again resumes where it stopped.</p>
+</main>
+<script>
+"use strict";
+const SEARCH_CORE = __SEARCH_CORE__;
+const PYODIDE = "https://cdn.jsdelivr.net/pyodide/v0.28.3/full/";
+const RUNNER = Math.random().toString(36).slice(2, 10);
+const logEl = document.getElementById("log"), barEl = document.getElementById("bar");
+const head = [], tail = [];
+const T0 = performance.now();
+const IN_FRAME = window.parent !== window;
+if (IN_FRAME) document.body.classList.add("app");
+
+function render() { logEl.textContent = head.concat(tail.slice(-8)).join("\n"); if (IN_FRAME) size(); }
+function say(s) { head.push(s); render(); }
+function stream(s) { tail.push(s); render(); }
+function since(t) { return ((performance.now() - t) / 1000).toFixed(1) + " s"; }
+function mmss(ms) { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
+
+// ---------- MCP App handshake (only inside a chat panel) ----------
+let nextId = 1; const pending = {};
+function post(msg) { window.parent.postMessage({ jsonrpc: "2.0", ...msg }, "*"); }
+function request(method, params) { const id = nextId++; post({ id, method, params }); return new Promise(r => pending[id] = r); }
+function size() { post({ method: "ui/notifications/size-changed", params: { width: document.body.scrollWidth, height: document.body.scrollHeight + 4 } }); }
+function fromFrame() {
+  return new Promise(resolve => {
+    window.addEventListener("message", e => {
+      const m = e.data; if (!m || m.jsonrpc !== "2.0") return;
+      if (m.id && pending[m.id]) { pending[m.id](m.result ?? m.error); delete pending[m.id]; return; }
+      if (m.method === "ui/resource-teardown" && m.id) post({ id: m.id, result: {} });
+      if (m.method === "ui/notifications/tool-result") {
+        const p = m.params || {}; const s = p.structuredContent?.result ?? p.structuredContent ?? JSON.parse(p.content?.[0]?.text || "{}");
+        if (s.patch_id && s.hunter_id) resolve({ pid: s.patch_id, hunter: s.hunter_id, hub: s.hub });
+      }
+    });
+    request("ui/initialize", { protocolVersion: "2026-01-26", appInfo: { name: "kepler-search", version: "0.4" }, appCapabilities: {} })
+      .then(() => post({ method: "ui/notifications/initialized" }));
+  });
+}
+function fromUrl() {
+  const pid = decodeURIComponent(location.pathname.split("/").filter(Boolean).pop() || "");
+  const h = new URLSearchParams(location.hash.slice(1));
+  return { pid, hunter: h.get("hunter"), hub: h.get("hub") || location.origin };
+}
+
+// ---------- hub ----------
+async function hub(base, path, body) {
+  const r = await fetch(base + path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `hub returned ${r.status}`);
+  return j;
+}
+function looksLikeSignal(r) {
+  try { return r.status === "ok" && r.snr >= 8 && r.n_transits >= 2 && r.depth_ppm / r.depth_err_ppm >= 5 && r.duration_h <= 1.5 * r.max_duration_h + 0.5; }
+  catch { return false; }
+}
+function telemetry(r) {
+  const tm = r.tmag != null ? `T ${r.tmag.toFixed(1)}` : "T  ?  ";
+  if (r.status !== "ok") return `TIC ${String(r.tic).padEnd(11)} ${tm}  no usable light curve`;
+  const rms = r.noise_ppm ? `rms ${(r.noise_ppm / 1e4).toFixed(2)}%` : "rms   ?  ";
+  return `TIC ${String(r.tic).padEnd(11)} ${tm}  ${rms}  ` + (looksLikeSignal(r) ? "TRANSIT-LIKE SIGNAL" : "nominal");
+}
+function saved(pid) { try { return JSON.parse(localStorage.getItem("kepler:" + pid) || "{}"); } catch { return {}; } }
+function save(pid, rows) { try { localStorage.setItem("kepler:" + pid, JSON.stringify(rows)); } catch {} }
+function forget(pid) { try { localStorage.removeItem("kepler:" + pid); } catch {} }
+
+// ---------- the search ----------
+async function main() {
+  const job = IN_FRAME && !location.pathname.includes("/search/") ? await fromFrame() : fromUrl();
+  const { pid, hunter } = job; const base = (job.hub || location.origin).replace(/\/$/, "");
+  if (!pid || !hunter) throw new Error("this link is missing its field or hunter id; ask Claude to open the field again");
+  const P = await hub(base, `/patch/${pid}?hunter=${encodeURIComponent(hunter)}`);
+  const stars = P.stars, sector = P.sector, total = stars.length;
+  say(`KEPLER  field ${pid} · TESS Sector ${sector} · camera ${P.camera} CCD ${P.ccd} · ${total} stars`);
+  const rows = saved(pid);
+  const todo = stars.filter(s => !rows[s.tic]);
+  if (total - todo.length) say(`RESUME  ${total - todo.length} stars already searched in this browser`);
+  const beat = (extra = {}) => hub(base, `/patch/${pid}/progress`, { hunter, runner: RUNNER, done: Object.keys(rows).length, total,
+    signals: Object.values(rows).filter(looksLikeSignal).length, ...extra });
+  await beat();      // refuses if another window is already searching this field
+
+  let t = performance.now();
+  await new Promise((ok, bad) => { const s = document.createElement("script"); s.src = PYODIDE + "pyodide.js"; s.onload = ok;
+    s.onerror = () => bad(new Error("could not load Pyodide from cdn.jsdelivr.net")); document.head.appendChild(s); });
+  const py = await loadPyodide({ indexURL: PYODIDE });
+  await py.loadPackage(["numpy", "scipy", "astropy"]);
+  py.FS.writeFile("/home/pyodide/search_core.py", SEARCH_CORE);
+  py.runPython("import sys, json; sys.path.insert(0, '/home/pyodide'); import search_core as S, numpy as np");
+  say(`PYTHON  search code ready in this ${IN_FRAME ? "panel" : "tab"}                     ${since(t)}`);
+
+  const CUBE = `https://stpubdata.s3.amazonaws.com/tess/public/mast/tess-s${String(sector).padStart(4, "0")}-${P.camera}-${P.ccd}-cube.fits`;
+  let bytes = 0;
+  const rng = async (a, n, tries = 3) => {
+    for (let k = 1; ; k++) {
+      try { const r = await fetch(CUBE, { headers: { Range: `bytes=${a}-${a + n - 1}` } });
+        if (r.status !== 206 && r.status !== 200) throw new Error(`NASA archive returned ${r.status}`);
+        const b = new Uint8Array(await r.arrayBuffer()); bytes += b.length; return b; }
+      catch (e) { if (k >= tries) throw e; await new Promise(z => setTimeout(z, 1500 * k)); }
+    }
+  };
+  t = performance.now();
+  py.globals.set("head", await rng(0, 2880 * 8));
+  const G = JSON.parse(py.runPython(`
+h = bytes(head.to_py()).decode('latin-1')
+h0, l0 = S.parse_header(h); h1, l1 = S.parse_header(h[l0:])
+NF, NC, NR = h1['NAXIS2'], h1['NAXIS3'], h1['NAXIS4']; data0 = l0 + l1
+json.dumps(dict(NF=NF, NC=NC, NR=NR, data0=data0, tab=data0 + (NR*NC*NF*8 + 2879)//2880*2880))`));
+  py.globals.set("thead", await rng(G.tab, 2880 * 30));
+  const tl = JSON.parse(py.runPython(`th, tl = S.parse_header(bytes(thead.to_py()).decode('latin-1')); json.dumps([tl, th['NAXIS1']*th['NAXIS2']])`));
+  py.globals.set("table", await rng(G.tab + tl[0], tl[1]));
+  py.runPython(`
+tb = bytes(table.to_py()); tstart, tstop, quality = S.read_table(tb, th); times = (tstart + tstop) / 2; wcs = S.frame_wcs(tb, th)
+del tb, head, thead, table`);
+  say(`ARCHIVE NASA TESS full-frame cube: ${G.NF} frames · ${(G.NF * 15 * 15 * 8 / 1e6).toFixed(1)} MB per star`);
+
+  const SIZE = 15;
+  const place = s => JSON.parse(py.runPython(`json.dumps(S.star_pixel(wcs, *S.position_at(json.loads(${JSON.stringify(JSON.stringify(s))}), ${sector})))`));
+  const fetchStar = s => {
+    const [x, y] = place(s); const c0 = Math.round(x) - (SIZE >> 1), r0 = Math.round(y) - (SIZE >> 1);
+    if (c0 < 0 || r0 < 0 || c0 + SIZE > G.NC || r0 + SIZE > G.NR) return Promise.resolve(null);
+    return Promise.all(Array.from({ length: SIZE }, (_, k) => rng(G.data0 + (((r0 + k) * G.NC + c0) * G.NF * 2) * 4, SIZE * G.NF * 8)));
+  };
+  const AHEAD = 3; const queue = todo.map(() => null);
+  for (let i = 0; i < Math.min(AHEAD, todo.length); i++) queue[i] = fetchStar(todo[i]).catch(e => e);
+  const tStart = performance.now(); let fresh = [], lastBeat = performance.now();
+  for (let i = 0; i < todo.length; i++) {
+    if (i + AHEAD < todo.length) queue[i + AHEAD] = fetchStar(todo[i + AHEAD]).catch(e => e);
+    const s = todo[i]; const strips = await queue[i]; queue[i] = null;
+    let r;
+    if (!strips) r = { tic: s.tic, tmag: s.Tmag ?? null, status: "off_detector" };
+    else if (strips instanceof Error) r = { tic: s.tic, tmag: s.Tmag ?? null, status: `error: ${strips.message}`.slice(0, 80) };
+    else {
+      py.globals.set("strips", strips);
+      r = JSON.parse(py.runPython(`
+flux, err = S.strips_to_cube([bytes(x.to_py()) for x in strips], NF, ${SIZE}); del strips
+json.dumps(S.patch_row(json.loads(${JSON.stringify(JSON.stringify(s))}), times, flux, err, quality))`));
+    }
+    rows[s.tic] = r; save(pid, rows);
+    const line = telemetry(r); stream(line); fresh.push(line);
+    const n = Object.keys(rows).length, nsig = Object.values(rows).filter(looksLikeSignal).length;
+    const left = (performance.now() - tStart) / (i + 1) * (todo.length - i - 1);
+    barEl.style.width = (100 * n / total).toFixed(1) + "%";
+    head[head.length - 1].startsWith("SEARCH") ? head.pop() : null;
+    head.push(`SEARCH  ${n}/${total} stars · ${nsig} signal${nsig === 1 ? "" : "s"} · ${(bytes / 1e6).toFixed(0)} MB read · about ${mmss(left)} left`); render();
+    if (looksLikeSignal(r)) {
+      const sig = `TIC ${r.tic}: depth ${(r.depth_ppm / 1e4).toFixed(2)}%, P = ${r.period_d.toFixed(3)} d, ${r.n_transits} transits, S/N ${r.snr.toFixed(1)}`;
+      beat({ latest: "signal " + sig, stars: fresh }).catch(() => {}); fresh = []; lastBeat = performance.now();
+    } else if (fresh.length >= 3 || performance.now() - lastBeat > 15000) {
+      beat({ stars: fresh }).catch(() => {}); fresh = []; lastBeat = performance.now();
+    }
+    await new Promise(z => setTimeout(z, 0));        // let the page repaint between stars
+  }
+  const all = Object.values(rows), ok = all.filter(r => r.status === "ok").length;
+  if (all.length < 0.9 * total) throw new Error(`${all.length} of ${total} stars searched; nothing uploaded. Reload to resume.`);
+  say(`UPLOAD  ${all.length} rows (${ok} usable light curves) · one row of numbers per star`);
+  const res = await hub(base, `/patch/${pid}/results`, { hunter, rows: all });
+  say(`VERIFY  Kepler is re-running ${res.signals_flagged || 0} flagged star(s)`);
+  let fin = { status: "verifying" };
+  for (let k = 0; k < 90 && fin.status === "verifying"; k++) { await new Promise(z => setTimeout(z, 4000)); fin = await hub(base, `/patch/${pid}/status`); }
+  forget(pid);
+  barEl.style.width = "100%";
+  if (fin.status === "done") {
+    const n = fin.n_leads || 0;
+    say(n ? `DONE    ${n} transit-like signal(s) verified and queued for vetting · ${mmss(performance.now() - T0)}`
+          : `DONE    no signal passed verification; this field is recorded as searched · ${mmss(performance.now() - T0)}`);
+    logEl.classList.add("done");
+    if (!IN_FRAME) say("        You can close this tab.");
+  } else say(`STATUS  ${fin.note || fin.status}`);
+}
+main().catch(e => { say(`STOPPED ${e.message || e}`); logEl.classList.add("err"); console.error(e); });
+</script>
+</body>
+</html>

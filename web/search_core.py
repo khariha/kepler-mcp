@@ -70,6 +70,51 @@ def read_table(table_bytes, hdr):
     return col("TSTART"), col("TSTOP"), col("DQUALITY")
 
 
+_WCS_KEYS = ("CTYPE1", "CTYPE2", "CRVAL1", "CRVAL2", "CRPIX1", "CRPIX2", "CD1_1", "CD1_2", "CD2_1", "CD2_2", "A_ORDER", "B_ORDER",
+             "AP_ORDER", "BP_ORDER", "A_DMAX", "B_DMAX")
+
+
+def frame_wcs(table_bytes, hdr):
+    """Celestial WCS of the cube, from the frame table (the middle frame with a valid solution), as astrocut does."""
+    from astropy.io.fits import Header
+    from astropy.wcs import WCS
+    w, n = int(hdr["NAXIS1"]), int(hdr["NAXIS2"])
+    raw = np.frombuffer(table_bytes[: w * n], dtype=np.uint8).reshape(n, w)
+    names = [str(hdr[f"TTYPE{i}"]).strip() for i in range(1, int(hdr["TFIELDS"]) + 1)]
+    sip = [k for k in names if k[:2] in ("A_", "B_") or k[:3] in ("AP_", "BP_")]
+    cols = table_columns(hdr, set(_WCS_KEYS) | set(sip))
+    def val(i, name):
+        o, code = cols[name]
+        if code == "A":
+            rep = int(str(hdr[f"TFORM{names.index(name) + 1}"]).strip()[:-1] or 1)
+            return bytes(raw[i, o:o + rep]).decode("ascii", "replace").strip()
+        size, dt = {"D": (8, ">f8"), "J": (4, ">i4")}[code]
+        return np.ascontiguousarray(raw[i, o:o + size]).view(dt)[0].item()
+    for i in [n // 2] + list(range(n)):
+        if val(i, "CRVAL1") != 0 and val(i, "CTYPE1"):
+            h = Header()
+            h["WCSAXES"] = 2
+            for k in cols:
+                h[k] = val(i, k)
+            return WCS(h)
+    raise ValueError("no frame in this cube has a WCS solution")
+
+
+def star_pixel(wcs, ra, dec):
+    """0-based (column, row) of a sky position on the full-frame image."""
+    x, y = wcs.all_world2pix([[ra, dec]], 0)[0]
+    return float(x), float(y)
+
+
+def position_at(star, sector):
+    """Catalogue position (epoch 2000) moved by proper motion to the middle of the Sector (tesshunt.star.position_at)."""
+    pmra, pmdec = star.get("pmRA") or 0.0, star.get("pmDEC") or 0.0
+    years = (2018.56 + (int(sector) - 1) * 27.4 / 365.25) - 2000.0
+    dec = star["dec"] + pmdec * years / 3.6e6
+    ra = star["ra"] + pmra * years / 3.6e6 / max(np.cos(np.radians(star["dec"])), 1e-6)
+    return ra, dec
+
+
 def strips_to_cube(strips, n_frames, size):
     """Row strips (each `size` pixels x n_frames x [flux, err], float32 BE) -> flux, err arrays [frame, row, col]."""
     a = np.stack([np.frombuffer(s, dtype=">f4").reshape(size, n_frames, 2) for s in strips])  # [row, col, frame, 2]
@@ -232,6 +277,70 @@ def fold(t, f, period, t0):
     ph = ((t - t0 + 0.5 * period) % period) - 0.5 * period
     o = np.argsort(ph)
     return ph[o] * 24.0, f[o]
+
+
+# ---------- vet (the parts of pipeline.vet a patch row needs) ----------
+
+def vet_row(t, f, period, t0, duration):
+    """depth_err_ppm (white noise, raised to the scatter of boxes at other phases) and the number of transits covered."""
+    from_center = ((t - t0 + period / 2) % period) - period / 2
+    in_tr = np.abs(from_center) < duration / 2
+    out = f[~in_tr]
+    scatter = np.nanstd(out)
+    n_in = max(int(in_tr.sum()), 1)
+    formal_err = scatter / np.sqrt(n_in / 2)
+    phase = ((t - t0) % period) / period
+    boxes = []
+    for c in np.arange(0.15, 0.851, 0.01):
+        w = np.abs(((phase - c + 0.5) % 1) - 0.5) < (duration / period) / 2
+        if w.sum() >= 5:
+            boxes.append(np.nanmean(out) - np.nanmean(f[w]))
+    depth_err = formal_err
+    if len(boxes) >= 20:
+        b = np.array(boxes)
+        mad = 1.4826 * np.median(np.abs(b - np.median(b)))
+        if mad > 0:
+            depth_err = max(formal_err, mad * np.sqrt(2))
+    cyc = np.round((t - t0) / period).astype(int)
+    return float(depth_err * 1e6), int(len(np.unique(cyc[in_tr])))
+
+
+def max_duration_hours(period_days, density=1.0):
+    return 13.0 * (period_days / 365.25) ** (1 / 3) * density ** (-1 / 3)
+
+
+ROW_FIELDS = ("status", "period_d", "t0", "duration_h", "max_duration_h", "depth_ppm", "depth_err_ppm", "snr", "n_transits",
+              "cadence_min", "noise_ppm")
+
+
+def patch_row(star, time, flux, err, quality):
+    """One star of a patch -> the row the hub expects (same fields as kepler_sweep.worker.search_one)."""
+    import math
+    row = {"tic": int(star["tic"]), "tmag": star.get("Tmag")}
+    try:
+        cad = float(np.nanmedian(np.diff(time)) * 1440)
+        t, f, e, aper = light_curve(time, flux, err, quality)
+        t, f, e = clean(t, f, e)
+        f, e = flatten(t, f, e, window_hours=33)
+        t, f, e = mask_jitter(t, f, e)
+        t, f, e = drop_isolated_glitches(t, f, e)
+        if len(t) < 300:
+            row.update(status="too_few_cadences")
+        else:
+            r = search(t, f, e)
+            err_ppm, n_tr = vet_row(t, f, r["period_d"], r["t0"], r["duration_h"] / 24)
+            rad, mass = star.get("rad"), star.get("mass")
+            dens = mass / rad ** 3 if rad and mass and rad > 0 and mass > 0 else 1.0
+            row.update(status="ok", period_d=r["period_d"], t0=r["t0"], duration_h=r["duration_h"],
+                       max_duration_h=max_duration_hours(r["period_d"], dens), depth_ppm=r["depth_ppm"], depth_err_ppm=err_ppm,
+                       snr=r["snr"], n_transits=n_tr, cadence_min=cad, noise_ppm=float(np.nanstd(f)) * 1e6)
+    except Exception as ex:
+        row.update(status=f"error: {type(ex).__name__}: {str(ex)[:80]}")
+    for k in ROW_FIELDS:
+        v = row.get(k)
+        if k != "status":
+            row[k] = None if v is None or (isinstance(v, float) and not math.isfinite(v)) else float(v)
+    return row
 
 
 # ---------- one star end to end ----------

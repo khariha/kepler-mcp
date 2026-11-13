@@ -51,7 +51,7 @@ Workflows
 - Check a named star: resolve_star -> catalog_check -> search_transits -> vet_signal -> neighbors -> followup_start -> job_status.
 - Handles: propose the user's known first name as the handle and ask only for confirmation and a recovery word; the handle is public.
 - Vet a queued lead: join(handle, recovery_word) -> next_lead -> vet_signal -> neighbors -> followup_start -> job_status -> submit_vet.
-- Search new sky: join -> sky_map -> open_patch -> run the returned command on the user's computer -> patch_status -> next_lead.
+- Search new sky: join -> sky_map -> open_patch -> open search_url in the user's browser -> patch_status -> next_lead.
 - lesson: an opt-in guided walkthrough on a known planet. read_guide: reference on false positives and verdict meanings.
 
 Results
@@ -67,8 +67,8 @@ Conduct
 - Before a step that takes more than a few seconds, or that runs a command, state in one or two sentences what it does, what it reads and sends,
   and how long it takes. Then proceed in the same turn. Do not start silently, and do not stop to ask permission: the client's own permission
   prompt is the consent step.
-- A field search command is executed by the assistant, with its shell tool, in the background. Show the command to the user in one line first,
-  then run it; never ask the user to run, copy or paste it. Only when no shell tool exists in this client: say so in one line and give the command.
+- A field search runs in the user's browser, from open_patch's search_url; nothing is installed. If the chat shows a Kepler panel for it, it is
+  already running there. Otherwise open the link for the user (shell `open` / `xdg-open` / `start`), or, with no shell, give it as a link to click.
 - While a long step runs, show its progress: results carry `display`, a short text block to print verbatim in a code block.
 - A field search or a follow-up is not finished when it starts. Stay in the same turn and keep calling patch_status (or job_status) until its status
   is done, printing each `display` as it arrives. Each call waits about 20 s for the next reading. Do not end the turn, and do not say that progress
@@ -583,12 +583,32 @@ async def sky_map(ctx: Context, sector: int | None = None) -> dict:
     return out
 
 
-@mcp.tool(title="Open a patch of sky", annotations=NOTE)
+# ---- the field search page: runs in the user's browser tab, or as a panel in chat clients that show MCP Apps ----
+_WEB = pathlib.Path(__file__).resolve().parent.parent / "web"
+FIELD_APP = "ui://kepler/field-search"
+
+
+def _search_page() -> str:
+    html = (_WEB / "search.html").read_text()
+    return html.replace("__SEARCH_CORE__", json.dumps((_WEB / "search_core.py").read_text()))
+
+
+_HUB_ORIGIN = [PUBLIC_URL.rstrip("/")] if PUBLIC_URL.startswith("https://") else []
+
+
+@mcp.resource(FIELD_APP, name="field-search", title="Kepler field search", mime_type="text/html;profile=mcp-app",
+              meta={"ui": {"csp": {"connectDomains": ["https://stpubdata.s3.amazonaws.com", "https://cdn.jsdelivr.net"] + _HUB_ORIGIN,
+                                   "resourceDomains": ["https://cdn.jsdelivr.net"]}}})
+def field_search_app() -> str:
+    return _search_page()
+
+
+@mcp.tool(title="Open a patch of sky", annotations=NOTE, meta={"ui": {"resourceUri": FIELD_APP}})
 async def open_patch(hunter_id: str, ctx: Context, patch_id: str | None = None, star_type: str | None = None) -> dict:
-    """Search for new planets: Claim an unsearched field (about 150 stars) and get the command that searches it on the user's computer. star_type: red (default),
-    orange, or yellow. The assistant executes the returned command itself with its shell tool, in the background, right after stating what it
-    does; it does not ask the user to run it. The search takes about seven minutes, reads NASA's public TESS files, and uploads one row of
-    numbers per star. Held for two hours. Needs Python 3.11+. If no field of that type is mapped, mapping starts and takes several minutes."""
+    """Search for new planets: claim an unsearched field (about 150 stars) and get `search_url`, a page that searches it in the user's own
+    browser (no install). In chat apps that show MCP Apps the same search runs in a panel under this result. star_type: red (default), orange,
+    or yellow. The search takes about ten minutes, reads NASA's public TESS files, and uploads one row of numbers per star. Held for two hours.
+    If no field of that type is mapped, mapping starts and takes several minutes."""
     if star_type and star_type not in sky.POPULATIONS:
         raise ToolError(f"star_type must be one of {', '.join(sky.POPULATIONS)}; white and hotter stars are not offered")
     pop = star_type or (None if patch_id else "red")
@@ -604,51 +624,27 @@ async def open_patch(hunter_id: str, ctx: Context, patch_id: str | None = None, 
                 "keep_polling": bool(nxt),
                 "next_actions": ([core.act("open_patch", "mapping is still running: call again in about a minute", hunter_id=hunter_id, star_type=kind)]
                                  if nxt else [])}
-    cmd = f"{SWEEP_CMD} {p['id']} --hunter {hunter_id} --hub {_base_url(ctx)}"
+    base = _base_url(ctx)
+    url = f"{base}/search/{p['id']}#hunter={hunter_id}"
     store.trace(_sid(ctx), "open_patch", {"patch_id": p["id"]}, {"patch_id": p["id"]}, 0, False)
-    return {"patch_id": p["id"], "sector": p["sector"], "star_type": p["pop"], "stars": p["n_stars"], "held_minutes": int((p["claimed_until"] - time.time()) / 60),
-            "command": cmd, "resumed": p["resumed"],
-            "install_if_missing": (None if SWEEP_CMD != "kepler-sweep" else
-                                   {"check": "command -v kepler-sweep", "install": SWEEP_INSTALL,
-                                    "note": "one-time, about a minute; needs Python 3.11 or newer. Show the install line to the user before running it."}), "detectable": sky.POPULATIONS[p["pop"]]["finds"],
-            "display": R.line("FIELD", f"{p['id']} claimed", f"{p['n_stars']} {p['pop']} stars", f"Sector {p['sector']}",
-                              f"held {int((p['claimed_until'] - time.time()) / 60)} min"),
-            "summary": (f"Field {p['id']} claimed: {p['n_stars']} unsearched {p['pop']} stars, Sector {p['sector']}. The assistant executes `command` with its shell tool "
-                        "(background; about seven minutes; Python 3.11+). It reads public TESS images and uploads one row of numbers per star."),
-            "procedure": ["The hub sends the list of target stars for this field.",
-                          "For each star the helper reads its pixels from NASA's public TESS full-frame images (MAST archive), builds a light curve, and runs a box-least-squares transit search.",
+    held = int((p["claimed_until"] - time.time()) / 60)
+    return {"patch_id": p["id"], "hunter_id": hunter_id, "hub": base, "sector": p["sector"], "star_type": p["pop"], "stars": p["n_stars"],
+            "held_minutes": held, "search_url": url, "resumed": p["resumed"], "detectable": sky.POPULATIONS[p["pop"]]["finds"],
+            "display": R.line("FIELD", f"{p['id']} claimed", f"{p['n_stars']} {p['pop']} stars", f"Sector {p['sector']}", f"held {held} min"),
+            "summary": (f"Field {p['id']} claimed: {p['n_stars']} unsearched {p['pop']} stars, Sector {p['sector']}. The search runs in the user's browser "
+                        "from search_url (about ten minutes, no install). It reads public TESS images and uploads one row of numbers per star."),
+            "procedure": ["The page receives the list of target stars for this field.",
+                          "For each star it reads the pixels from NASA's public TESS full-frame images, builds a light curve, and runs a box-least-squares transit search, in the browser.",
                           "One row of numbers per star is uploaded; no files, credentials or personal data.",
                           "The hub re-runs every star the upload flags, and one unflagged star, before any signal is queued for vetting."],
-            "duration": f"about {max(1, round(p['n_stars'] / 20))} minutes for {p['n_stars']} stars on a laptop",
-            "run_in": ("If install_if_missing is set and its check fails, show its install line to the user and run it first. " if SWEEP_CMD == "kepler-sweep" else "")
-                      + "Show `command` to the user in one line, then execute it with the shell tool, in the background, in the same turn as this result. "
-                      "Do not ask the user to run it themselves. Then call patch_status repeatedly (each call waits for the next progress reading) and show its `display` block verbatim "
-                      "in a code block each time, without ending the turn, until patch_status returns keep_polling false (about "
-                      f"{max(4, round(p['n_stars'] / 20 * 3))} calls). Only if no shell tool exists: say so and give the command.",
-            "next_actions": [core.act("patch_status", "result of the search, after the command finishes", patch_id=p["id"])]}
-
-
-# ---- in-chat search (MCP App spike): the search runs in the client's sandboxed frame, on the user's computer ----
-_WEB = pathlib.Path(__file__).resolve().parent.parent / "web"
-APP_URI = "ui://kepler/search"
-APP_CSP = {"connectDomains": ["https://stpubdata.s3.amazonaws.com", "https://cdn.jsdelivr.net"],
-           "resourceDomains": ["https://cdn.jsdelivr.net"]}
-
-
-@mcp.resource(APP_URI, name="search", title="Kepler in-chat search", mime_type="text/html;profile=mcp-app",
-              meta={"ui": {"csp": APP_CSP}})
-def search_app() -> str:
-    html = (_WEB / "search-app.html").read_text()
-    return html.replace("__SEARCH_CORE__", json.dumps((_WEB / "search_core.py").read_text()))
-
-
-@mcp.tool(title="Search a star in the chat (test)", annotations=READ, meta={"ui": {"resourceUri": APP_URI}})
-async def search_in_chat() -> dict:
-    """Test of in-chat search: shows a small panel in clients that support MCP Apps, which downloads pi Mensae's TESS pixels
-    from NASA's public archive and runs the transit search on the user's own computer. Clients without MCP Apps show nothing."""
-    return {"name": "pi Mensae (TIC 261136679)", "sector": 1, "cam": 4, "ccd": 2, "col": 1632.29, "row": 259.79, "size": 15,
-            "summary": "In-chat search started in the panel above (test: pi Mensae, Sector 1).",
-            "display": "IN-CHAT SEARCH  pi Mensae · Sector 1 · running in the panel above"}
+            "duration": f"about {max(2, round(p['n_stars'] / 15))} minutes for {p['n_stars']} stars",
+            "run_in": ("If a Kepler panel is showing this search in the chat, it is already running there. Otherwise open search_url in the user's "
+                       "browser: with a shell tool run `open '<search_url>'` (macOS), `xdg-open` (Linux) or `start \"\" \"<search_url>\"` (Windows); "
+                       "without one, give the user the link to click. Opening it twice is harmless: the second window stops by itself. "
+                       "The tab must stay open until it says done. Then call patch_status repeatedly (each call waits for the next progress reading) "
+                       "and show its `display` verbatim in a code block each time, without ending the turn, until keep_polling is false "
+                       f"(about {max(4, round(p['n_stars'] / 15 * 3))} calls)."),
+            "next_actions": [core.act("patch_status", "progress of the search running in the browser", patch_id=p["id"])]}
 
 
 @mcp.tool(title="Patch status", annotations=READ)
@@ -847,7 +843,32 @@ async def health(request):
     return JSONResponse({"ok": True, "server": "kepler", "version": "0.3.0"})
 
 
-@mcp.custom_route("/patch/{pid}", methods=["GET"])
+def _cors(handler):
+    """The field-search panel runs in a chat client's sandboxed frame, on another origin, and calls these routes. They carry only
+    the hunter id the page was given, so any origin may call them."""
+    import functools
+    from starlette.responses import Response
+    H = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+         "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Max-Age": "86400"}
+    @functools.wraps(handler)
+    async def wrapped(request):
+        if request.method == "OPTIONS":
+            return Response(status_code=204, headers=H)
+        resp = await handler(request)
+        resp.headers.update(H)
+        return resp
+    return wrapped
+
+
+@mcp.custom_route("/search/{pid}", methods=["GET"])
+async def search_page(request):
+    """The field-search page. The hunter id travels in the URL fragment, which browsers never send to the server."""
+    from starlette.responses import HTMLResponse
+    return HTMLResponse(_search_page(), headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+
+@mcp.custom_route("/patch/{pid}", methods=["GET", "OPTIONS"])
+@_cors
 async def patch_get(request):
     from starlette.responses import JSONResponse
     try:
@@ -856,7 +877,8 @@ async def patch_get(request):
         return JSONResponse({"error": str(e)}, status_code=403)
 
 
-@mcp.custom_route("/patch/{pid}/status", methods=["GET"])
+@mcp.custom_route("/patch/{pid}/status", methods=["GET", "OPTIONS"])
+@_cors
 async def patch_state(request):
     from starlette.responses import JSONResponse
     try:
@@ -866,7 +888,8 @@ async def patch_state(request):
     return JSONResponse({k: p[k] for k in ("id", "status", "n_stars", "n_flagged", "n_leads", "opened_by", "note")})
 
 
-@mcp.custom_route("/patch/{pid}/progress", methods=["POST"])
+@mcp.custom_route("/patch/{pid}/progress", methods=["POST", "OPTIONS"])
+@_cors
 async def patch_progress(request):
     from starlette.responses import JSONResponse
     body = await request.body()
@@ -876,7 +899,8 @@ async def patch_progress(request):
         import json as _json
         d = _json.loads(body)
         sky.set_progress(str(d.get("hunter", "")), request.path_params["pid"], int(d.get("done", 0)), int(d.get("total", 0)),
-                         int(d.get("signals", 0)), d.get("latest"), stars=d.get("stars") if isinstance(d.get("stars"), list) else None)
+                         int(d.get("signals", 0)), d.get("latest"), stars=d.get("stars") if isinstance(d.get("stars"), list) else None,
+                         runner=str(d["runner"])[:16] if d.get("runner") else None)
     except (sky.SkyError, leads.LeadError) as e:
         return JSONResponse({"error": str(e)}, status_code=403)
     except Exception:
@@ -884,7 +908,8 @@ async def patch_progress(request):
     return JSONResponse({"ok": True})
 
 
-@mcp.custom_route("/patch/{pid}/results", methods=["POST"])
+@mcp.custom_route("/patch/{pid}/results", methods=["POST", "OPTIONS"])
+@_cors
 async def patch_post(request):
     from starlette.responses import JSONResponse
     body = await request.body()

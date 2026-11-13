@@ -170,7 +170,7 @@ def stars_for(hunter_id, pid):
                 raise SkyError(f"there is no patch {pid}")
             if p["status"] != "claimed" or p["opened_by"] != me:
                 raise SkyError(f"patch {pid} is not held by this handle; call open_patch first")
-            return {"patch_id": pid, "sector": p["sector"], "stars": [json.loads(r["star"]) for r in c.execute("select star from patch_stars where patch_id=? order by tic", (pid,))]}
+            return {"patch_id": pid, "sector": p["sector"], "camera": p["camera"], "ccd": p["ccd"], "stars": [json.loads(r["star"]) for r in c.execute("select star from patch_stars where patch_id=? order by tic", (pid,))]}
 
 
 # ---------------- uploads ----------------
@@ -243,9 +243,13 @@ _progress = {}
 RULE = "\u2500" * 66
 
 
-def set_progress(hunter_id, pid, done, total, signals, latest=None, now=None, stars=None):
+RUNNER_QUIET_S = 60     # a search window that has not reported for this long is taken to be closed
+
+
+def set_progress(hunter_id, pid, done, total, signals, latest=None, now=None, stars=None, runner=None):
     """Heartbeat from the helper while it searches. Only the handle holding the patch may report.
-    latest: a line describing a new signal. stars: short telemetry lines for stars just completed."""
+    latest: a line describing a new signal. stars: short telemetry lines for stars just completed.
+    runner: id of the browser tab or chat panel doing the search; a second one is refused while the first is still reporting."""
     with _lock:
         with leads._db() as lc:
             me = leads._handle(lc, hunter_id)
@@ -254,13 +258,17 @@ def set_progress(hunter_id, pid, done, total, signals, latest=None, now=None, st
         if not p or p["status"] != "claimed" or p["opened_by"] != me:
             raise SkyError(f"patch {pid} is not held by this handle")
         prev = _progress.get(pid) or {"started": now or time.time(), "signals_seen": [], "stars_seen": []}
+        t_now = now or time.time()
+        if runner and prev.get("runner") and prev["runner"] != runner and t_now - prev.get("updated", 0) < RUNNER_QUIET_S:
+            raise SkyError(f"field {pid} is already being searched in another window; this one has stopped")
         total = int(p["n_stars"]); done = max(0, min(int(done), total))
         seen = prev["signals_seen"]
         if latest and latest not in seen:
             seen = (seen + [str(latest)[:120]])[-5:]
         recent = (prev["stars_seen"] + [str(x)[:90] for x in (stars or [])][:6])[-4:]
         _progress[pid] = {"started": prev["started"], "updated": now or time.time(), "done": done, "total": total, "sector": p["sector"], "pop": p["pop"],
-                          "signals": max(0, int(signals)), "signals_seen": seen, "stars_seen": recent}
+                          "signals": max(0, int(signals)), "signals_seen": seen, "stars_seen": recent,
+                          "runner": runner or prev.get("runner")}
 
 
 def _bar(done, total, width=30):
