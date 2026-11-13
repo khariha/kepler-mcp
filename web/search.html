@@ -19,12 +19,28 @@
   .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
   .note { color: var(--mute); margin: 0; }
   .done { color: var(--good); } .err { color: var(--bad); }
+  .card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 10px; margin: 0 0 6px; }
+  .card canvas { width: 100%; border: 1px solid var(--line); display: block; background: #000; }
+  .card canvas.fold { background: var(--bg); }
+  .cap { color: var(--mute); margin: 0 0 10px; min-height: 1.55em; }
+  .cap b { color: var(--fg); font-weight: 600; } .cap .sig { color: var(--accent); font-weight: 600; }
+  .thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(38px, 1fr)); gap: 4px; margin: 0 0 10px; }
+  .thumbs canvas { width: 100%; aspect-ratio: 1; display: block; border: 2px solid transparent; cursor: pointer; image-rendering: pixelated; }
+  .thumbs canvas.sig { border-color: var(--accent); }
+  .thumbs canvas.on { outline: 1px solid var(--fg); }
+  @media (max-width: 520px) { .card { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <main>
   <h1>Kepler · field search</h1>
   <div class="bar"><div id="bar"></div></div>
+  <div class="card" id="card" hidden>
+    <canvas id="cut" width="300" height="300" aria-label="pixel cutout of the current star, aperture outlined"></canvas>
+    <canvas id="lc" class="fold" width="600" height="300" aria-label="light curve folded at the best period"></canvas>
+  </div>
+  <div class="cap" id="cap"></div>
+  <div class="thumbs" id="thumbs"></div>
   <pre id="log">starting…</pre>
   <p class="note">This tab searches about 150 stars on your computer: it reads their pixels from NASA's public TESS archive, looks for
   repeating transit-like dips, and sends one row of numbers per star to Kepler. Keep it open (visible) until it says done; closing it pauses
@@ -90,6 +106,71 @@ function telemetry(r) {
   const rms = r.noise_ppm ? `rms ${(r.noise_ppm / 1e4).toFixed(2)}%` : "rms   ?  ";
   return `TIC ${String(r.tic).padEnd(11)} ${tm}  ${rms}  ` + (looksLikeSignal(r) ? "TRANSIT-LIKE SIGNAL" : "nominal");
 }
+// ---------- live preview: the star being searched, and the ones just done ----------
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function heat(v) {      // dark -> amber -> white, like a magma map
+  const s = [[0, 0, 4], [80, 18, 123], [183, 55, 121], [252, 137, 97], [252, 253, 191]];
+  const x = Math.max(0, Math.min(1, v)) * (s.length - 1), i = Math.min(Math.floor(x), s.length - 2), f = x - i;
+  return `rgb(${s[i].map((c, k) => Math.round(c + (s[i + 1][k] - c) * f)).join(",")})`;
+}
+function drawCut(cv, pv, outline = true) {
+  const g = cv.getContext("2d"), n = pv.img.length, W = cv.width, px = W / n;
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) { g.fillStyle = heat(pv.img[y][x]); g.fillRect(x * px, (n - 1 - y) * px, px + 0.5, px + 0.5); }
+  if (!outline) return;
+  g.strokeStyle = "#39d0ff"; g.lineWidth = Math.max(1.5, px / 8); g.beginPath();
+  const A = (x, y) => y >= 0 && y < n && x >= 0 && x < n && pv.aper[y][x];
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (A(x, y)) {
+    const X = x * px, Y = (n - 1 - y) * px;
+    if (!A(x, y + 1)) { g.moveTo(X, Y); g.lineTo(X + px, Y); }
+    if (!A(x, y - 1)) { g.moveTo(X, Y + px); g.lineTo(X + px, Y + px); }
+    if (!A(x - 1, y)) { g.moveTo(X, Y); g.lineTo(X, Y + px); }
+    if (!A(x + 1, y)) { g.moveTo(X + px, Y); g.lineTo(X + px, Y + px); }
+  }
+  g.stroke();
+}
+function drawFold(cv, pv, r) {
+  const g = cv.getContext("2d"), W = cv.width, H = cv.height, L = 46, B = 30, T = 12, Rr = 10;
+  g.clearRect(0, 0, W, H); g.font = "13px ui-monospace, Menlo, monospace"; g.fillStyle = css("--mute");
+  if (!pv.bins || !pv.bins.length) { g.fillText(r.status === "ok" ? "no fold" : "no usable light curve", L, H / 2); return; }
+  const ys = pv.bins.map(b => b[1]), spread = Math.max(...ys) - Math.min(...ys);
+  const pad = Math.max(spread * 0.6, (r.noise_ppm || 500) / 1e6 * 1.5);
+  const lo = Math.min(...ys) - pad, hi = Math.max(...ys) + pad, w = pv.win;
+  const X = x => L + (x + w) / (2 * w) * (W - L - Rr), Y = y => T + (hi - y) / (hi - lo) * (H - T - B);
+  g.strokeStyle = css("--line"); g.lineWidth = 1; g.beginPath(); g.moveTo(X(0), T); g.lineTo(X(0), H - B); g.moveTo(L, Y(1)); g.lineTo(W - Rr, Y(1)); g.stroke();
+  g.fillStyle = css("--mute"); g.globalAlpha = 0.45;
+  for (const [x, y] of pv.pts) if (y > lo && y < hi) g.fillRect(X(x) - 1.5, Y(y) - 1.5, 3, 3);
+  g.globalAlpha = 1; g.strokeStyle = css("--accent"); g.lineWidth = 2.5; g.beginPath();
+  pv.bins.forEach(([x, y], i) => i ? g.lineTo(X(x), Y(y)) : g.moveTo(X(x), Y(y))); g.stroke();
+  g.fillStyle = css("--mute");
+  g.fillText(`${(-w).toFixed(0)} h`, L, H - 10); g.fillText("0", X(0) - 4, H - 10); g.fillText(`+${w.toFixed(0)} h`, W - Rr - 40, H - 10);
+  g.fillText(`${((hi - 1) * 1e6).toFixed(0)}`, 4, T + 10); g.fillText(`${((lo - 1) * 1e6).toFixed(0)}`, 4, H - B);
+  g.fillText("ppm", 4, (T + H - B) / 2);
+}
+const recent = [];
+function showStar(item) {
+  const { r, pv } = item; document.getElementById("card").hidden = false;
+  drawCut(document.getElementById("cut"), pv); drawFold(document.getElementById("lc"), pv, r);
+  const sig = looksLikeSignal(r);
+  document.getElementById("cap").innerHTML = r.status === "ok"
+    ? `<b>TIC ${r.tic}</b> · T ${r.tmag?.toFixed(1) ?? "?"} · best P ${r.period_d.toFixed(3)} d · depth ${Math.round(r.depth_ppm)} ppm · S/N ${r.snr.toFixed(1)} · ${r.n_transits} transits` +
+      (sig ? ` · <span class="sig">TRANSIT-LIKE SIGNAL</span>` : " · nominal")
+    : `<b>TIC ${r.tic}</b> · no usable light curve`;
+  document.querySelectorAll(".thumbs canvas").forEach(c => c.classList.toggle("on", c._item === item));
+  if (IN_FRAME) size();
+}
+function addThumb(r, pv) {
+  const item = { r, pv }; recent.push(item);
+  const c = document.createElement("canvas"); c.width = c.height = pv.img.length * 4; c._item = item;
+  c.title = `TIC ${r.tic}` + (r.status === "ok" ? ` · P ${r.period_d.toFixed(2)} d · S/N ${r.snr.toFixed(1)}` : "");
+  if (looksLikeSignal(r)) c.classList.add("sig");
+  drawCut(c, pv, false); c.onclick = () => { pinnedUntil = performance.now() + 12000; showStar(item); };   // look at one for 12 s, then follow again
+  const box = document.getElementById("thumbs"); box.appendChild(c);
+  while (box.children.length > 48) box.removeChild(box.firstChild);
+  while (recent.length > 48) recent.shift();
+  if (performance.now() > pinnedUntil) showStar(item);
+}
+let pinnedUntil = 0;
+
 function saved(pid) { try { return JSON.parse(localStorage.getItem("kepler:" + pid) || "{}"); } catch { return {}; } }
 function save(pid, rows) { try { localStorage.setItem("kepler:" + pid, JSON.stringify(rows)); } catch {} }
 function forget(pid) { try { localStorage.removeItem("kepler:" + pid); } catch {} }
@@ -163,8 +244,10 @@ del tb, head, thead, table`);
       py.globals.set("strips", strips);
       r = JSON.parse(py.runPython(`
 flux, err = S.strips_to_cube([bytes(x.to_py()) for x in strips], NF, ${SIZE}); del strips
-json.dumps(S.patch_row(json.loads(${JSON.stringify(JSON.stringify(s))}), times, flux, err, quality))`));
+json.dumps(S.patch_row(json.loads(${JSON.stringify(JSON.stringify(s))}), times, flux, err, quality, preview=True))`));
     }
+    const pv = r._preview; delete r._preview;
+    if (pv) addThumb(r, pv);
     rows[s.tic] = r; save(pid, rows);
     const line = telemetry(r); stream(line); fresh.push(line);
     const n = Object.keys(rows).length, nsig = Object.values(rows).filter(looksLikeSignal).length;

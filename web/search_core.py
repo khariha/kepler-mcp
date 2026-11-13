@@ -313,10 +313,32 @@ ROW_FIELDS = ("status", "period_d", "t0", "duration_h", "max_duration_h", "depth
               "cadence_min", "noise_ppm")
 
 
-def patch_row(star, time, flux, err, quality):
-    """One star of a patch -> the row the hub expects (same fields as kepler_sweep.worker.search_one)."""
+def _preview(flux, aper, t=None, f=None, r=None):
+    """What the page draws for a star (never uploaded): the median cutout (log-scaled 0-1), the aperture, and the light curve folded
+    at the best period, as points and bins in hours from mid-transit."""
+    img = np.nanmedian(flux, axis=0)
+    lo, hi = np.nanpercentile(img, 5), np.nanpercentile(img, 99.5)
+    scaled = np.log1p(np.clip((img - lo) / max(hi - lo, 1e-9), 0, 1) * 30) / np.log1p(30)
+    out = {"img": np.nan_to_num(scaled).round(3).tolist(), "aper": aper.astype(int).tolist()}
+    if r is not None:
+        ph, fph = fold(t, f, r["period_d"], r["t0"])
+        win = min(max(4.0, 2.5 * r["duration_h"]), 12.0 * r["period_d"])      # never more than half an orbit either side
+        sel = np.abs(ph) <= win
+        ph, fph = ph[sel], fph[sel]
+        edges = np.linspace(-win, win, 33)
+        idx = np.digitize(ph, edges) - 1
+        bins = [[float((edges[k] + edges[k + 1]) / 2), float(np.nanmean(fph[idx == k]))] for k in range(32) if (idx == k).any()]
+        keep = np.linspace(0, len(ph) - 1, min(len(ph), 500)).astype(int) if len(ph) else []
+        out.update(win=win, pts=[[round(float(ph[k]), 3), round(float(fph[k]), 6)] for k in keep], bins=bins)
+    return out
+
+
+def patch_row(star, time, flux, err, quality, preview=False):
+    """One star of a patch -> the row the hub expects (same fields as kepler_sweep.worker.search_one).
+    preview=True adds `_preview` for the page to draw; the page removes it before upload."""
     import math
     row = {"tic": int(star["tic"]), "tmag": star.get("Tmag")}
+    t = f = r = aper = None
     try:
         cad = float(np.nanmedian(np.diff(time)) * 1440)
         t, f, e, aper = light_curve(time, flux, err, quality)
@@ -340,6 +362,12 @@ def patch_row(star, time, flux, err, quality):
         v = row.get(k)
         if k != "status":
             row[k] = None if v is None or (isinstance(v, float) and not math.isfinite(v)) else float(v)
+    if preview:
+        try:
+            row["_preview"] = _preview(flux, aper if aper is not None else central_aperture(flux.shape[1:]),
+                                       t, f, {"period_d": row["period_d"], "t0": row["t0"], "duration_h": row["duration_h"]} if row["status"] == "ok" else None)
+        except Exception:
+            pass
     return row
 
 
