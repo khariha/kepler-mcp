@@ -7,6 +7,7 @@ COPY pyproject.toml README.md LICENSE ./
 COPY tesshunt ./tesshunt
 COPY kepler_mcp ./kepler_mcp
 COPY kepler_sweep ./kepler_sweep
+COPY web ./web
 # spherical_geometry (via astrocut) has no wheel for every platform (linux/arm64 builds from source): needs a compiler.
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir -e .

@@ -7,7 +7,7 @@ Env: KEPLER_DATA (cache + traces dir), KEPLER_HOSTS (comma-separated allowed Hos
      KEPLER_LIGHT_PER_HOUR, KEPLER_HEAVY_PER_HOUR, KEPLER_TIMEOUT_S, KEPLER_CONCURRENCY,
      KEPLER_TRACES=0 to turn the trace log off, KEPLER_SALT.
 """
-import argparse, os, re, sys, time, warnings
+import argparse, json, os, pathlib, re, sys, time, warnings
 import socket
 socket.setdefaulttimeout(float(os.environ.get("KEPLER_NET_TIMEOUT", 60)))   # catalogue and archive calls have no timeout of their own
 import anyio
@@ -626,6 +626,29 @@ async def open_patch(hunter_id: str, ctx: Context, patch_id: str | None = None, 
                       "in a code block each time, without ending the turn, until patch_status returns keep_polling false (about "
                       f"{max(4, round(p['n_stars'] / 20 * 3))} calls). Only if no shell tool exists: say so and give the command.",
             "next_actions": [core.act("patch_status", "result of the search, after the command finishes", patch_id=p["id"])]}
+
+
+# ---- in-chat search (MCP App spike): the search runs in the client's sandboxed frame, on the user's computer ----
+_WEB = pathlib.Path(__file__).resolve().parent.parent / "web"
+APP_URI = "ui://kepler/search"
+APP_CSP = {"connectDomains": ["https://stpubdata.s3.amazonaws.com", "https://cdn.jsdelivr.net"],
+           "resourceDomains": ["https://cdn.jsdelivr.net"]}
+
+
+@mcp.resource(APP_URI, name="search", title="Kepler in-chat search", mime_type="text/html;profile=mcp-app",
+              meta={"ui": {"csp": APP_CSP}})
+def search_app() -> str:
+    html = (_WEB / "search-app.html").read_text()
+    return html.replace("__SEARCH_CORE__", json.dumps((_WEB / "search_core.py").read_text()))
+
+
+@mcp.tool(title="Search a star in the chat (test)", annotations=READ, meta={"ui": {"resourceUri": APP_URI}})
+async def search_in_chat() -> dict:
+    """Test of in-chat search: shows a small panel in clients that support MCP Apps, which downloads pi Mensae's TESS pixels
+    from NASA's public archive and runs the transit search on the user's own computer. Clients without MCP Apps show nothing."""
+    return {"name": "pi Mensae (TIC 261136679)", "sector": 1, "cam": 4, "ccd": 2, "col": 1632.29, "row": 259.79, "size": 15,
+            "summary": "In-chat search started in the panel above (test: pi Mensae, Sector 1).",
+            "display": "IN-CHAT SEARCH  pi Mensae · Sector 1 · running in the panel above"}
 
 
 @mcp.tool(title="Patch status", annotations=READ)

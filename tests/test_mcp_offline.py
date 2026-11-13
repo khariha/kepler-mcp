@@ -111,7 +111,7 @@ def test_server_registers_tools_and_guide():
     assert names == {"resolve_star", "catalog_check", "light_curve", "search_transits", "vet_signal", "neighbors", "fold_plot",
                      "followup_start", "job_status", "report_verdict", "read_guide",
                      "lesson", "join", "next_lead", "submit_vet", "board", "my_progress",
-                     "sky_map", "open_patch", "patch_status", "find_planets"}
+                     "sky_map", "open_patch", "patch_status", "find_planets", "search_in_chat"}
     g = server._guide()
     import re as _re
     assert "eccentric" in g and not _re.search(r"TIC \d", g)          # the reference names no particular star
