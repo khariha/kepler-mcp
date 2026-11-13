@@ -894,12 +894,13 @@ th{{font-weight:700;border-bottom:.1rem solid #000}} .n{{text-align:right}} .kv 
 .kv{{margin-bottom:2rem}} .board{{border-left:4px solid #ffb700}} .board td:nth-child(2){{width:100%}} tr.top td{{background:rgba(0,0,0,.06)}}
 .btn{{display:inline-block;height:2rem;padding:.1rem .7rem 0;line-height:1.5rem;font:inherit;font-weight:700;color:#fff;background:#00794c;border:.1rem solid #00794c;border-radius:0;box-shadow:2px 2px #bbb;cursor:pointer;white-space:nowrap}}
 .btn:hover,.btn:focus{{background:#000;border-color:#000}} .add{{display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:.5rem}} .add span{{font-size:.85rem;color:#00794c}}
-.addt td{{white-space:normal;word-break:break-all}} .addt th{{width:8rem}}
+.addt td{{white-space:normal;word-break:break-all}} .addt th{{width:8rem}} .addt{{margin-bottom:2rem}}
 .wrap{{overflow-x:auto}} .none{{color:#777}} footer{{display:flex;justify-content:space-between;gap:1rem;margin-top:2rem;padding-top:.5rem;border-top:1px dashed #000;font-size:.85rem;color:#555}}
 @media (max-width:436px){{html{{font-size:12px;background:#fff}} body{{margin:0;border:none;box-shadow:none}} .kv th{{width:auto}}}}
 @media print{{html{{background:#fff}} body{{border:none;box-shadow:none;margin:0}}}}</style></head><body>
 <div class="head"><h1>Kepler MCP</h1><span>Generative Experiences</span></div>
 <div class="colorbar" aria-hidden="true"><i style="background:#000"></i><i style="background:#003f9b"></i><i style="background:#0092ff"></i><i style="background:#00c986"></i><i style="background:#ffb700"></i><i style="background:#ff4a03"></i><i style="background:#e7040f"></i></div>
+<h2>0. Get started</h2><hr class="dots">
 <div class="add"><button class="btn" id="add" type="button">Add Kepler MCP to Claude &rarr;</button><span id="done" class="mono" role="status"></span></div>
 <table class="kv addt"><tr><th>Claude Code</th><td id="cmd">{add_cmd}</td></tr><tr><th>Claude app</th><td>Settings &rsaquo; Connectors &rsaquo; Add custom connector &rsaquo; {mcp_url}</td></tr></table>
 <script>document.getElementById("add").onclick=function(){{var t=document.getElementById("cmd").textContent,d=document.getElementById("done");
