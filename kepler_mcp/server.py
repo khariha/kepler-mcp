@@ -596,7 +596,7 @@ def _search_page() -> str:
 _HUB_ORIGIN = [PUBLIC_URL.rstrip("/")] if PUBLIC_URL.startswith("https://") else []
 
 
-@mcp.resource(FIELD_APP, name="field-search", title="Kepler field search", mime_type="text/html;profile=mcp-app",
+@mcp.resource(FIELD_APP, name="field-search", title="Kepler Field Search Tool", mime_type="text/html;profile=mcp-app",
               meta={"ui": {"csp": {"connectDomains": ["https://stpubdata.s3.amazonaws.com", "https://cdn.jsdelivr.net"] + _HUB_ORIGIN,
                                    "resourceDomains": ["https://cdn.jsdelivr.net"]}}})
 def field_search_app() -> str:
