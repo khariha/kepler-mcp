@@ -38,7 +38,7 @@ Results
 - Terms: a "lead" is an unvetted transit-like signal; a "patch" is a field of about 150 target stars.
 
 Conduct
-- Session start: call `console` first and print its `display` verbatim in a code block, with nothing before it. Then ask what to do, in one line.
+- Session start: call `welcome` first and print its `display` verbatim in a code block, with nothing before it. Then ask what to do, in one line.
 - `display` blocks are console readouts. Always print them verbatim in a code block, unedited, before any commentary.
 - Before a step that takes more than a few seconds, or that runs a command, state in one or two sentences what it does, what it reads and sends,
   and how long it takes. Then proceed in the same turn. Do not start silently, and do not stop to ask permission: the client's own permission
@@ -594,35 +594,22 @@ def _verify_patch(pid, hunter_handle, flagged, quiet_tic):
         sky.finish(pid, [], rejected_reason=f"the hub could not verify the upload ({type(e).__name__}); please run the search again later")
 
 
-# ---------------- console header ----------------
-_links_cache = {"at": 0.0, "v": None}
+# ---------------- welcome ----------------
+WELCOME = """KEPLER TRANSIT SURVEY
+
+Welcome. This service searches NASA TESS full-frame
+images for transit-like signals and vets them against
+known false positives. Results are planet candidates;
+confirmation requires other instruments.
+
+You may search an unsearched field, vet a queued
+signal, or check a named star."""
 
 
-def _links():
-    """Reachability of the services Kepler depends on, probed in parallel and cached for two minutes."""
-    if _links_cache["v"] is not None and time.time() - _links_cache["at"] < 120:
-        return _links_cache["v"]
-    import concurrent.futures, requests
-    targets = {"archive": "https://stpubdata.s3.amazonaws.com/tess/public/mast/tess-s0001-1-1-cube.fits",
-               "catalogue": "https://mast.stsci.edu/",
-               "exoplanets": "https://exoplanetarchive.ipac.caltech.edu/TAP/availability"}
-
-    def probe(url):
-        try:
-            return requests.head(url, timeout=3, allow_redirects=True).status_code < 500
-        except Exception:
-            return False
-    with concurrent.futures.ThreadPoolExecutor(3) as ex:
-        v = dict(zip(targets, ex.map(probe, targets.values())))
-    _links_cache.update(at=time.time(), v=v)
-    return v
-
-
-@mcp.tool(title="Kepler console", annotations=READ)
-async def console(ctx: Context, hunter_id: str | None = None) -> dict:
-    """Session header: link status of the hub, the TESS archive and the catalogues; survey coverage; signals awaiting vetting; the signed-in
-    handle. Call once at the start of a session and show `display` verbatim in a code block before anything else. About 1-3 s."""
-    links = await anyio.to_thread.run_sync(_links)
+@mcp.tool(title="Welcome", annotations=READ)
+async def welcome(ctx: Context, hunter_id: str | None = None) -> dict:
+    """Opening notice for a session. Call once at the start and show `display` verbatim in a code block before anything else. Also returns
+    current counts (fields ready by star type, stars searched, signals awaiting vetting) and the signed-in handle, for answering questions."""
     sk = sky.summary(); t = sk["totals"]; bd = leads.board(limit=1)
     handle = None
     if hunter_id:
@@ -630,25 +617,12 @@ async def console(ctx: Context, hunter_id: str | None = None) -> dict:
             handle = leads.stats(hunter_id)["handle"]
         except leads.LeadError:
             handle = None
-    st = lambda ok: "ONLINE" if ok else "NO RESPONSE"
-    R = sky.RULE
-    mapped = ", ".join(f"{k} {v}" for k, v in sk["unopened_by_star_type"].items() if v) or "none mapped yet"
-    lines = ["KEPLER \u00b7 TRANSIT SURVEY CONSOLE".ljust(54) + f"v{mcp.version}".rjust(12), R,
-             f" LINK     hub ...................... ONLINE",
-             f"          TESS archive (NASA MAST) . {st(links['archive'])}",
-             f"          TESS Input Catalog ....... {st(links['catalogue'])}",
-             f"          NASA Exoplanet Archive ... {st(links['exoplanets'])}",
-             f" SURVEY   sectors open: {', '.join(str(x) for x in sk['open_sectors'])}   fields ready: {mapped}",
-             f"          searched: {t['searched']} field(s), {t['stars_searched']} stars   signals identified: {t['leads_found']}",
-             f" QUEUE    {bd['leads_open']} signal(s) awaiting vetting   {bd['leads_surviving']} planet candidate(s) listed",
-             f" OPERATOR {handle or 'not signed in'}", R,
-             " READY    search a field \u00b7 vet a signal \u00b7 check a star"]
-    out = {"display": "\n".join(lines), "links": {k: bool(v) for k, v in links.items()}, "survey": t, "fields_ready_by_star_type": sk["unopened_by_star_type"],
-           "signals_awaiting_vetting": bd["leads_open"], "candidates_listed": bd["leads_surviving"], "operator": handle,
-           "summary": (f"Hub online; archive {st(links['archive']).lower()}; {t['searched']} field(s) and {t['stars_searched']} stars searched; "
-                       f"{bd['leads_open']} signal(s) awaiting vetting; " + (f"signed in as {handle}." if handle else "no handle signed in.")),
-           "next_actions": ([] if handle else [])}
-    return out
+    return {"display": WELCOME, "open_sectors": sk["open_sectors"], "fields_ready_by_star_type": sk["unopened_by_star_type"],
+            "fields_searched": t["searched"], "stars_searched": t["stars_searched"], "signals_awaiting_vetting": bd["leads_open"],
+            "candidates_listed": bd["leads_surviving"], "signed_in_as": handle,
+            "summary": (f"{t['searched']} field(s) and {t['stars_searched']} stars searched; {bd['leads_open']} signal(s) awaiting vetting; "
+                        + (f"signed in as {handle}." if handle else "no handle signed in.")),
+            "next_actions": []}
 
 
 def _guide():

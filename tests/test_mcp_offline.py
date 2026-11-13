@@ -111,7 +111,7 @@ def test_server_registers_tools_and_guide():
     assert names == {"resolve_star", "catalog_check", "light_curve", "search_transits", "vet_signal", "neighbors", "fold_plot",
                      "followup_start", "job_status", "report_verdict", "read_guide",
                      "lesson", "join", "next_lead", "submit_vet", "board", "my_progress",
-                     "sky_map", "open_patch", "patch_status", "console"}
+                     "sky_map", "open_patch", "patch_status", "welcome"}
     g = server._guide()
     import re as _re
     assert "eccentric" in g and not _re.search(r"TIC \d", g)          # the reference names no particular star
@@ -386,10 +386,11 @@ def test_register_is_instrument_not_tour_guide():
         return await server.mcp.list_tools(), await server.mcp.list_prompts()
     tools, prompts = anyio.run(go)
     names = {t.name for t in tools}
-    assert "welcome" not in names and "start" not in {p.name for p in prompts} and "lesson" in names
+    assert "start" not in {p.name for p in prompts} and "lesson" in names
+    assert server.WELCOME.startswith("KEPLER TRANSIT SURVEY") and "planet candidates" in server.WELCOME and "!" not in server.WELCOME
     texts = {"instructions": server.INSTRUCTIONS}
     for t in tools:
-        if t.name != "lesson":                                   # the lesson keeps its teaching voice by decision
+        if t.name not in ("lesson", "welcome"):                  # the lesson keeps its teaching voice; the welcome notice is its own test
             texts["tool " + t.name] = t.description or ""
     for k, v in {**core.SUMMARY_VET, **core.SUMMARY_FOLLOW}.items():
         texts["summary " + k] = v
@@ -402,7 +403,7 @@ def test_register_is_instrument_not_tour_guide():
         src = src.split("LESSON = {")[0] + src.split("LESSON = {")[1].split("\n}\n", 1)[1] if "LESSON = {" in src else src
         for i, m in enumerate(re.findall(r'(?:summary"\]?\s*[+=:]+\s*\(?f?|Error\(f?)"([^"]+)"', src)):
             texts[f"{mod.__name__} literal {i}"] = m
-    banned = re.compile(r"(?i)\b(you|your|yours|let's|welcome|congratulations|great|awesome)\b|!")
+    banned = re.compile(r"(?i)\b(you|your|yours|let's|congratulations|great|awesome)\b|!")
     bad = {k: banned.search(v).group(0) for k, v in texts.items() if banned.search(v)}
     assert not bad, bad
 
