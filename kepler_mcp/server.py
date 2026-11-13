@@ -19,6 +19,7 @@ from kepler_mcp import readout as R
 
 warnings.filterwarnings("ignore")
 import logging
+VERSION = "0.3.0"
 for _noisy in ("lightkurve", "lightkurve.utils"):
     logging.getLogger(_noisy).setLevel(logging.ERROR)      # their INFO lines flood the server log on every pixel read
 try:
@@ -89,7 +90,7 @@ mcp = MCPServer("kepler", title="Kepler: find planets in NASA TESS data",
                 description="Find planets: search NASA TESS space-telescope data for exoplanets crossing their stars, check any star for a planet, "
                             "and vet planet candidates. Planet hunting, exoplanet search, transit detection and vetting.",
                 instructions=INSTRUCTIONS,
-                website_url="https://github.com/khariha/kepler-mcp", version="0.3.0")
+                website_url="https://github.com/khariha/kepler-mcp", version=VERSION)
 
 
 async def _run(tool, cls, ctx, args, fn, cacheable=True):
@@ -866,28 +867,43 @@ async def board_html(request):
         if r:
             r["vetted"] += h["leads_vetted"]
     ranked = sorted(who.values(), key=lambda r: (-r["stars"], -r["vetted"], r["handle"].lower()))
-    lead_rows = "".join(f"<tr><td>{n}</td><td>{e(r['handle'])}</td><td>{r['stars']:,}</td><td>{r['found']}</td><td>{r['vetted']}</td></tr>"
+    lead_rows = "".join(f"<tr{' class=top' if n == 1 else ''}><td class=n>{n}</td><td>{e(r['handle'])}</td><td class=n>{r['stars']:,}</td><td class=n>{r['found']}</td><td class=n>{r['vetted']}</td></tr>"
                         for n, r in enumerate(ranked, 1)) or '<tr><td colspan="5" class="none">No planet hunters yet.</td></tr>'
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+    sectors = ", ".join(str(x) for x in sk["open_sectors"])
+    # Idiom: engineering datasheet (black on paper, 14px, square, tables, dot screens). Built from scratch; no third-party CSS or fonts.
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Kepler board</title><style>
-:root{{--fg:#1b1b1b;--mut:#565c65;--line:#dfe1e2;--tint:#f0f0f0;--pri:#005ea2;--pri-dk:#1a4480;--gold:#ffbe2e}}
-*{{box-sizing:border-box}} body{{background:#fff;color:var(--fg);font:17px/1.5 "Public Sans","Source Sans Pro","Helvetica Neue",Helvetica,Arial,sans-serif;margin:0}}
-header{{background:var(--pri-dk);color:#fff;padding:20px 16px;border-bottom:4px solid var(--gold)}} header div,main{{max-width:800px;margin:0 auto}}
-header b{{font-size:22px}} header span{{display:block;font-size:15px;opacity:.9}} main{{padding:32px 16px 48px}}
-.lab{{font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--mut)}}
-.big{{font-size:64px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums;margin:4px 0 12px}}
-.bar{{height:44px;border:2px solid var(--fg)}} .bar i{{display:block;height:100%;background:var(--pri);min-width:3px}}
-.cap{{color:var(--mut);font-size:15px;margin:8px 0 0}} h2{{font-size:22px;margin:48px 0 12px}}
-.wrap{{overflow-x:auto}} table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}}
-th,td{{text-align:right;padding:10px 12px;border:1px solid var(--line);white-space:nowrap}} th{{background:var(--tint)}}
-th:nth-child(2),td:nth-child(2){{text-align:left;width:100%}} .none{{color:var(--mut);text-align:left}}
-@media (max-width:560px){{.big{{font-size:44px}}}}</style></head><body>
-<header><div><b>Kepler MCP</b><span>Generative Experiences</span></div></header><main>
-<div class="lab">TESS data catalogued</div><div class="big">{pct:.4f}%</div>
+html{{font-size:14px;line-height:1.5rem;background:#eee}} *{{box-sizing:border-box}}
+body{{font-family:"Inter Tight","Archivo","Helvetica Neue",Helvetica,Arial,system-ui,sans-serif;color:#000;background:#fff;max-width:720px;margin:2rem auto;
+padding:1rem 1.2rem;border:1px solid #888;box-shadow:2px 2px #ccc;text-rendering:optimizeLegibility}}
+.mono,td.n,th.n,.ticks,.kv td{{font-family:"JetBrains Mono","IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;font-variant-numeric:tabular-nums}}
+h1,h2{{font-size:1rem;font-weight:700;line-height:1.2;margin:0}} h1{{font-stretch:condensed;letter-spacing:.04em;text-transform:uppercase}}
+.head{{display:flex;justify-content:space-between;align-items:flex-end;gap:1rem}} .head span{{color:#555}}
+.colorbar{{display:flex;height:.5rem;margin:.5rem 0 2rem}} .colorbar i{{flex:1}}
+hr.dots{{height:1rem;border:none;margin:.25rem 0 1rem;background:radial-gradient(#777 .5px,transparent 1px) 0 0/3px 3px}}
+.read{{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:.5rem}} .read b{{font-size:2rem;line-height:2rem}}
+.bar{{height:3.5rem;border:.1rem solid #000;box-shadow:2px 2px #bbb;background:radial-gradient(#bbb .5px,transparent 1px) 0 0/3px 3px}}
+.bar i{{display:block;height:100%;background:#002dce;min-width:3px}}
+.ticks{{display:flex;justify-content:space-between;font-size:.8rem;color:#555;border-top:0;margin:.25rem 0 1rem}}
+table{{width:100%;border-collapse:collapse}} td,th{{height:1.85rem;line-height:1.4rem;padding:.2rem .4rem 0;border:.1rem solid #bfbfbf;text-align:left;white-space:nowrap}}
+th{{font-weight:700;border-bottom:.1rem solid #000}} .n{{text-align:right}} .kv th{{border-bottom:.1rem solid #bfbfbf;font-weight:400;color:#555;width:25%}}
+.kv{{margin-bottom:2rem}} .board{{border-left:4px solid #ffb700}} .board td:nth-child(2){{width:100%}} tr.top td{{background:rgba(0,0,0,.06)}}
+.wrap{{overflow-x:auto}} .none{{color:#777}} footer{{display:flex;justify-content:space-between;gap:1rem;margin-top:2rem;padding-top:.5rem;border-top:1px dashed #000;font-size:.85rem;color:#555}}
+@media (max-width:436px){{html{{font-size:12px;background:#fff}} body{{margin:0;border:none;box-shadow:none}} .kv th{{width:auto}}}}
+@media print{{html{{background:#fff}} body{{border:none;box-shadow:none;margin:0}}}}</style></head><body>
+<div class="head"><h1>Kepler MCP</h1><span>Generative Experiences</span></div>
+<div class="colorbar" aria-hidden="true"><i style="background:#000"></i><i style="background:#003f9b"></i><i style="background:#0092ff"></i><i style="background:#00c986"></i><i style="background:#ffb700"></i><i style="background:#ff4a03"></i><i style="background:#e7040f"></i></div>
+<h2>1. TESS data catalogued</h2><hr class="dots">
+<div class="read"><b class="mono">{pct:.4f}%</b><span class="mono">{cv['fields_searched_equivalent']:.2f} / {cv['fields_total']:,} fields</span></div>
 <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{pct}" aria-label="Share of TESS data catalogued"><i style="width:{pct}%"></i></div>
-<p class="cap">{st['stars_searched']:,} stars searched</p>
-<h2>Leaderboard</h2><div class="wrap"><table><tr><th>#</th><th>Planet hunter</th><th>Stars searched</th><th>Signals found</th><th>Signals vetted</th></tr>{lead_rows}</table></div>
-</main></body></html>"""
+<div class="ticks"><span>0</span><span>25</span><span>50</span><span>75</span><span>100%</span></div>
+<div class="wrap"><table class="kv"><tr><th>Stars searched</th><td>{st['stars_searched']:,}</td><th>Patches searched</th><td>{st['searched']:,} / {st['patches']:,}</td></tr>
+<tr><th>Fields mapped</th><td>{cv['fields_mapped']:,} / {cv['fields_total']:,}</td><th>Sectors open</th><td>{sectors}</td></tr></table></div>
+<h2>2. Leaderboard</h2><hr class="dots">
+<div class="wrap"><table class="board"><tr><th class="n">#</th><th>Planet hunter</th><th class="n">Stars searched</th><th class="n">Signals found</th><th class="n">Signals vetted</th></tr>{lead_rows}</table></div>
+<footer><span>Field: 1 detector &times; 1 Sector &times; 1 star type. Share of TESS data, not of sky area.</span><span class="mono">KEPLER v{VERSION} &middot; {stamp}</span></footer>
+</body></html>"""
     return HTMLResponse(page)
 
 
