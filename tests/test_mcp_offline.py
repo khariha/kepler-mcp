@@ -42,6 +42,7 @@ def test_clean_makes_json_safe():
     from tesshunt_mcp import store
     out = store.clean({"a": np.float64("nan"), "b": np.int64(3), "c": [np.float32(1.23456789), float("inf")], "d": np.bool_(True)})
     assert out == {"a": None, "b": 3, "c": [pytest.approx(1.234568, rel=1e-6), None], "d": True}
+    assert store.clean(2458325.7244012345) == 2458325.7244                  # a BJD epoch keeps its decimals
     json.dumps(out)
 
 
@@ -112,7 +113,8 @@ def test_server_registers_tools_and_guide():
                      "lesson", "join", "next_lead", "submit_vet", "board", "my_progress",
                      "sky_map", "open_patch", "patch_status"}
     g = server._guide()
-    assert "eccentric" in g and "TIC " not in g.replace("TESS Input Catalog", "")
+    import re as _re
+    assert "eccentric" in g and not _re.search(r"TIC \d", g)          # the reference names no particular star
     assert "sweep" not in " ".join(names) and "mcmc" not in " ".join(names)
 
 

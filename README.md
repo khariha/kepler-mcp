@@ -7,7 +7,7 @@ Three workflows:
 - **Vet a lead.** Take a queued signal from a searched patch of sky, run the tests, record a verdict. A lead is listed as a candidate after two independent candidate verdicts and agreement from the server's own results.
 - **Search new sky.** Claim a patch of about 150 unsearched stars; a local helper searches it on your own computer in about seven minutes and uploads the numbers. Each patch is searched once and stored for everyone.
 
-People who use it are planet hunters. An optional guided lesson (`lesson`) recovers a known planet step by step.
+Output follows AAS-journal and TESS follow-up wording (planet candidate, false positive, false alarm, recovered in N of M Sectors), gives epochs in BJD_TDB, and returns a record shaped for a Research Note table or an ExoFOP CTOI upload when a signal is recovered. Users are volunteers, colloquially planet hunters; the project is not affiliated with Planet Hunters TESS. An optional guided lesson (`lesson`) recovers a known planet step by step.
 
 ## Quick start
 ```bash

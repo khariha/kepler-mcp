@@ -14,6 +14,7 @@ MCP server for finding and vetting transiting planet candidates in TESS full-fra
 
 ## Rules
 - Output says "planet candidate", never "planet" or "discovered".
+- Vocabulary: AAS-journal and TESS follow-up usage (see the Terminology table in tesshunt_mcp/guide.md). Epochs also in BJD_TDB. No "discovered", "confirmed", "validated"; no TOI numbers; disposition codes are ours, not TFOPWG's.
 - Voice: instrument. Tool output is terse and neutral: no greetings, encouragement, second person, or coaching. The `lesson` tool is the one exception.
 - Result contract: every result has `summary` (neutral, one or two sentences), `next_actions` (list of {tool, args, why} built with core.act, arguments complete), and `caveats`. No prose instructions to the model inside results.
 - Tools return JSON numbers plus an optional PNG, with a `caveats` list. An archive failure raises ToolError; it is never turned into a verdict.

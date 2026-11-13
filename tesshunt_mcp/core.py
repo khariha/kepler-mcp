@@ -32,8 +32,8 @@ def _build_flat(tpf, threshold):
     isolated = low & ~np.roll(low, 1) & ~np.roll(low, -1)
     return flat[~isolated], aper, int(isolated.sum())
 MAX_FOLLOWUP_SECTORS = int(os.environ.get("TESSHUNT_MCP_MAX_SECTORS", 12))
-TIME_NOTE = "times are BTJD = BJD - 2457000"
-CANDIDATE_NOTE = "a passing signal is a planet candidate, not a planet: confirmation requires follow-up observations"
+TIME_NOTE = "t0 is BTJD = BJD_TDB - 2457000; fields ending _bjd_tdb are BJD_TDB"
+CANDIDATE_NOTE = "a signal that passes is a planet candidate; validation or confirmation requires follow-up observations"
 
 
 def _plt():
@@ -150,26 +150,45 @@ def _binned(x, y, n=120):
 
 
 # ---------------- the result contract: summary + next_actions ----------------
+# Wording follows AAS-journal and TESS follow-up usage: "transit-like signal", "planet candidate", "false positive", "false alarm",
+# "recovered in N of M sectors", "consistent with". Never "discovered" or "confirmed".
 SUMMARY_VET = {
-    "eclipsing_binary": "Secondary eclipse recurring each orbit: eclipsing binary.",
-    "not_significant": "Dip under 4 sigma against the measured scatter in this sector.",
-    "not_transit_shaped": "Fails the transit-shape checks (duration, duty cycle, or odd/even depth).",
-    "on_target": "Transit-shaped, located on the target, no secondary at any phase. Single sector.",
-    "likely_on_target": "Transit-shaped, centroid consistent with the target, difference image too weak to locate the dip. Single sector.",
-    "blended": "Unresolved companion within 0.2 px: the source of the dip cannot be assigned.",
-    "anomaly": "Centroid shift larger than an on-target dip predicts; source uncertain.",
-    "off_target": "Difference image places the dip on a neighbouring star.",
-    "untestable": "Dip occupies too much of the period for a location test.",
+    "eclipsing_binary": "Secondary eclipse recurring each orbit: eclipsing binary (false positive).",
+    "not_significant": "Signal below 4 sigma against the measured scatter in this Sector.",
+    "not_transit_shaped": "Not transit-like: fails the duration, duty-cycle, or odd-even depth test.",
+    "on_target": "Transit-like; centroid and difference image consistent with the target; no secondary eclipse over phases 0.15-0.85. Single Sector.",
+    "likely_on_target": "Transit-like; centroid consistent with the target; difference image too weak to localize the signal. Single Sector.",
+    "blended": "Unresolved companion within 0.2 pixel: the source of the signal cannot be assigned.",
+    "anomaly": "Centroid offset larger than an on-target signal predicts; source uncertain.",
+    "off_target": "Centroid offset: the difference image places the signal on a neighbouring star (nearby eclipsing binary scenario).",
+    "untestable": "Signal occupies too much of the period for a localization test.",
 }
 SUMMARY_FOLLOW = {
-    "repeats": "Signal repeats at the stitched ephemeris with no contradicting sector.",
-    "does_not_repeat": "At least one sector with the sensitivity to show the dip does not show it.",
-    "eclipsing_binary": "Signal repeats and a secondary eclipse is seen separately in at least half the sectors: eclipsing binary.",
-    "not_significant": "Stitched dip under 5 sigma against the scatter at other phases.",
-    "inconclusive": "Fewer than two sectors show the dip clearly and none contradicts it.",
-    "single_sector_only": "Only one usable sector: repetition cannot be tested.",
-    "no_usable_sectors": "No sector yielded a usable light curve.",
+    "repeats": "Signal recovered at the stitched ephemeris with no contradicting Sector.",
+    "does_not_repeat": "Not recovered: at least one Sector with the sensitivity to show the signal does not show it (false alarm).",
+    "eclipsing_binary": "Signal recovered, and a secondary eclipse is seen separately in at least half the Sectors: eclipsing binary (false positive).",
+    "not_significant": "Stitched signal below 5 sigma against the scatter at other phases (false alarm).",
+    "inconclusive": "Inconclusive: fewer than two Sectors show the signal at 4 sigma and none contradicts it.",
+    "single_sector_only": "Only one usable Sector: recovery cannot be tested.",
+    "no_usable_sectors": "No Sector yielded a usable light curve.",
 }
+# Our verdict labels in the vocabulary of the TESS follow-up community. These are this server's labels in that style,
+# not dispositions assigned by the TESS Follow-up Observing Program Working Group (TFOPWG).
+DISPOSITION = {
+    "candidate": ("PC", "planet candidate"),
+    "eclipsing_binary": ("FP", "false positive: eclipsing binary (EB)"),
+    "blend_or_off_target": ("FP", "false positive: nearby eclipsing binary (NEB) or off-target signal"),
+    "systematics_or_noise": ("FA", "false alarm"),
+    "known_object": ("KP", "known planet, TOI or CTOI"),
+    "undecided": (None, "inconclusive"),
+    "inconclusive": (None, "inconclusive"),
+}
+BJD_OFFSET = 2457000.0
+
+
+def bjd(t_btjd):
+    """BTJD to BJD_TDB, the time system manuscripts and ExoFOP take."""
+    return None if t_btjd is None else round(float(t_btjd) + BJD_OFFSET, 5)
 
 
 def act(tool, why, **args):
@@ -193,7 +212,7 @@ def resolve_star(query):
     s["note"] = "sectors lists every sector whose footprint contains the star; the newest may not have public cubes yet"
     n = len(s["sectors"])
     tm = f"Tmag {s['Tmag']:.1f}" if s.get("Tmag") is not None else "Tmag unknown"
-    s["summary"] = f"TIC {s['ID']}, {tm}. " + (f"Observed in {n} sector(s): {s['sectors'][0]} to {s['sectors'][-1]}." if n else "Not observed by TESS.")
+    s["summary"] = f"TIC {s['ID']}, {tm}. " + (f"Observed in {n} Sector(s), {s['sectors'][0]} to {s['sectors'][-1]}. Stellar parameters: TIC v8." if n else "Not observed by TESS.")
     s["next_actions"] = ([act("catalog_check", "known planets and existing candidates", tic=s["ID"]),
                           act("search_transits", "transit search, earliest sector", tic=s["ID"], sector=s["sectors"][0])] if n else [])
     return s, None
@@ -210,11 +229,11 @@ def catalog_check(tic):
     out["caveats"] = [] if ctoi is not None else ["ExoFOP community-candidate list unreachable: CTOI status not checked"]
     out["caveats"].append("eclipsing-binary catalogs are not queried here; the all-phase secondary test in vet_signal is the EB check")
     if out["known_planet_host"]:
-        out["summary"] = f"Known planet host: {', '.join(out['planets'])}. A signal here is a recovery."
+        out["summary"] = f"Known planet host: {', '.join(out['planets'])}. A signal here is a recovery of a known planet."
     elif out["is_toi"] or out["is_ctoi"]:
-        out["summary"] = "Listed as a TOI or community candidate. A signal here is not new."
+        out["summary"] = "Listed as a TOI or CTOI. A signal here is not new."
     else:
-        out["summary"] = "Not a known planet host, TOI, or community candidate." + ("" if ctoi is not None else " CTOI list unreachable.")
+        out["summary"] = "Not a known planet host, TOI, or CTOI." + ("" if ctoi is not None else " CTOI list unreachable.")
     out["next_actions"] = []
     return out, None
 
@@ -262,7 +281,7 @@ def light_curve(tic, sector):
     ax.set_title(f"TIC {int(tic)}  sector {int(sector)}  {cad:.0f}-min cadence  noise {out['noise_ppm']:.0f} ppm")
     fig.tight_layout()
     out["summary"] = (f"Sector {int(sector)}: {len(flat)} cadences at {cad:.0f} min over {out['time_end'] - out['time_start']:.1f} d, "
-                      f"scatter {out['noise_ppm']:.0f} ppm per cadence, {out['aperture_px']}-pixel aperture.")
+                      f"rms {out['noise_ppm']:.0f} ppm per cadence, {out['aperture_px']}-pixel aperture, FFI photometry.")
     out["next_actions"] = [act("search_transits", "transit search on this sector", tic=int(tic), sector=int(sector))]
     return out, _png(fig)
 
@@ -307,16 +326,17 @@ def search_transits(tic, sector, min_period_d=0.3, max_period_d=13.0, min_snr=9.
                        "every light curve returns a best peak; below SNR 8 it is almost always noise or leftover systematics",
                        CANDIDATE_NOTE]}
     b = out["best"]
-    head = f"Best peak: P {b['period_d']:.4f} d, depth {b['depth_ppm']:.0f} ppm, duration {b['duration_h']:.2f} h, SNR {b['snr']:.1f}, {b['n_transits']} transit(s). "
+    b["t0_bjd_tdb"] = bjd(b["t0"])
+    head = f"Strongest BLS peak: P = {b['period_d']:.4f} d, depth {b['depth_ppm']:.0f} ppm, duration {b['duration_h']:.2f} h, S/N {b['snr']:.1f}, {b['n_transits']} transit(s). "
     transit_like = b["duration_h"] / 24 <= 0.25 * b["period_d"]
     if passes:
-        out["summary"] = head + "Passes the candidate bar."
-        out["next_actions"] = [act("vet_signal", "false-positive tests on this signal", **_sigargs(tic, sector, b))]
+        out["summary"] = head + "Transit-like signal: passes the detection criteria."
+        out["next_actions"] = [act("vet_signal", "false-positive vetting of this signal", **_sigargs(tic, sector, b))]
     elif r.snr < 8:
-        out["summary"] = head + "Below SNR 8: consistent with noise."
+        out["summary"] = head + "S/N below 8: consistent with noise."
         out["next_actions"] = []
     else:
-        out["summary"] = head + "Fails the candidate bar: " + "; ".join(fails)[:240] + "."
+        out["summary"] = head + "Fails the detection criteria: " + "; ".join(fails)[:240] + "."
         out["next_actions"] = [act("vet_signal", "classify the failure", **_sigargs(tic, sector, b))] if transit_like else []
     plt = _plt()
     fig, ax = plt.subplots(2, 1, figsize=(9, 6))
@@ -370,13 +390,13 @@ def neighbors(tic, sector, depth_ppm=None):
     others = [n for n in out["neighbors_within_3px"] if not n["is_target"]]
     fakers = [n for n in others if n.get("can_fake_dip")]
     if not others:
-        out["summary"] = "No other catalogued star within 3 px."
+        out["summary"] = "No other catalogued star within 3 pixels."
     elif depth_ppm is None:
-        out["summary"] = f"{len(others)} other star(s) within 3 px. No depth given, so none was tested against the dip."
+        out["summary"] = f"{len(others)} other star(s) within 3 pixels. No depth given, so none was tested against the signal."
     elif fakers:
-        out["summary"] = f"{len(others)} other star(s) within 3 px; {len(fakers)} bright enough to reproduce a {depth_ppm:.0f} ppm dip with an eclipse under 60%."
+        out["summary"] = f"{len(others)} other star(s) within 3 pixels; {len(fakers)} bright enough to reproduce a {depth_ppm:.0f} ppm signal as a nearby eclipsing binary (eclipse under 60%)."
     else:
-        out["summary"] = f"{len(others)} other star(s) within 3 px; none bright enough to reproduce a {depth_ppm:.0f} ppm dip."
+        out["summary"] = f"{len(others)} other star(s) within 3 pixels; none bright enough to reproduce a {depth_ppm:.0f} ppm signal."
     out["next_actions"] = []
     return out, None
 
@@ -439,7 +459,13 @@ def vet_signal(tic, sector, period_d, t0, duration_h):
            "caveats": _star_caveats(s) + ["one sector only: a verdict here is provisional until follow-up repeats it",
                        "an on_target verdict does not rule out a bound or background star inside the same pixel",
                        CANDIDATE_NOTE]}
-    out["summary"] = (f"{verdict}. " + SUMMARY_VET.get(verdict, "") + f" Depth {depth_ppm:.0f} ppm at {depth_ppm / err:.1f} sigma, {v['n_transits']} transit(s)."
+    out["t0_bjd_tdb"] = bjd(t0)
+    out["odd_minus_even_ppm"] = v["odd_depth_ppm"] - v["even_depth_ppm"]
+    out["secondary_phase_range"] = [0.15, 0.85]
+    sec = ("" if verdict == "eclipsing_binary" else
+           f" Deepest feature over phases 0.15-0.85: {any_sec:.0f} ppm ({any_sig:.1f} sigma against other phases).")
+    out["summary"] = (f"{verdict}. " + SUMMARY_VET.get(verdict, "") + f" Depth {depth_ppm:.0f} +/- {err / 2 ** 0.5:.0f} ppm, {v['n_transits']} transit(s), "
+                      f"odd-even {out['odd_minus_even_ppm']:.0f} +/- {err * 2 ** 0.5:.0f} ppm.{sec}"
                       if err and err > 0 else f"{verdict}. " + SUMMARY_VET.get(verdict, ""))
     if verdict in ("on_target", "likely_on_target"):
         out["next_actions"] = [act("followup_start", "test repetition across sectors", tic=int(tic), period_d=round(float(period_d), 6), t0=round(float(t0), 5),
@@ -509,6 +535,36 @@ def _box_stats(t, f, period, t0, dur):
     else:
         scatter = float(np.nanstd(f[~in_tr]) / np.sqrt(n_in) * 1e6) * 1.5   # too few boxes: inflate the white-noise error
     return depth, max(scatter, 1e-9), n_in
+
+
+def _record(star_row, joint, agree, usable, sectors):
+    """One row in the shape an RNAAS table or an ExoFOP CTOI upload takes. Uncertainties here are box-fit estimates:
+    a transit-model fit is required before publication."""
+    depth, half_err = joint["depth_ppm"], joint["err"]
+    depth_err = half_err / 2 ** 0.5                      # joint["err"] is the error of an odd-only or even-only depth
+    sig = depth / depth_err if depth_err > 0 else None
+    dur_h = joint["duration_h"]
+    rad = star_row.get("rad")
+    rp = P.planet_radius_earths(max(depth, 0) / 1e6, rad) if rad else None
+    rp_err = (rp * ((0.5 * depth_err / depth) ** 2 + 0.05 ** 2) ** 0.5) if (rp and depth > 0) else None   # 5% assumed on the stellar radius
+    return {
+        "tic_id": int(star_row["ID"]), "tmag": star_row.get("Tmag"),
+        "epoch_bjd_tdb": joint["t0_bjd_tdb"], "epoch_err_d": round(dur_h / 24 / (2 * sig), 5) if sig else None,
+        "period_d": round(joint["period"], 6), "period_err_d": round(joint["period_err_est"], 6),
+        "depth_ppm": round(depth), "depth_err_ppm": round(depth_err),
+        "duration_h": round(dur_h, 2), "duration_err_h": 0.13,
+        "rp_rearth": round(rp, 2) if rp else None, "rp_err_rearth": round(rp_err, 2) if rp_err else None,
+        "snr": round(sig, 1) if sig else None, "n_transits": joint["n_transits"],
+        "sectors": [int(x) for x in sectors], "recovered_sectors": [int(x) for x in agree],
+        "notes": {
+            "odd_minus_even_ppm": round(joint["odd"] - joint["even"]), "odd_minus_even_err_ppm": round(half_err * 2 ** 0.5),
+            "secondary_limit_ppm": round(joint.get("secondary_any_phase_ppm") or 0), "secondary_phase_range": [0.15, 0.85],
+            "recovered": f"{len(agree)} of {usable} Sectors",
+            "stellar_parameters": "TIC v8" + (" (radius and mass estimated from absolute K magnitude)" if star_row.get("rad_source") else ""),
+            "photometry": "TESS full-frame images, simple aperture, box-least-squares search",
+            "uncertainties": "box-fit estimates (duration from a 0.25 h grid, 5% assumed on stellar radius); a transit-model fit is required for publication",
+        },
+    }
 
 
 def followup(tic, period_d, t0, duration_h, depth_ppm, progress=lambda m: None):
@@ -609,9 +665,12 @@ def followup(tic, period_d, t0, duration_h, depth_ppm, progress=lambda m: None):
         out["caveats"].insert(0, "stitched dip under 5 sigma against the scatter at other phases: consistent with noise selected by a period search")
     if status == "inconclusive":
         out["caveats"].insert(0, "fewer than two sectors show the dip at 4 sigma and none contradicts it")
-    out["summary"] = f"{out['status']}. " + SUMMARY_FOLLOW.get(out["status"], "") + f" {len(agree)} of {usable} sector(s) agree, {len(contradict)} contradict."
+    out["summary"] = f"{out['status']}. " + SUMMARY_FOLLOW.get(out["status"], "") + f" Recovered in {len(agree)} of {usable} Sector(s); {len(contradict)} contradict."
     if joint:
-        out["summary"] += f" Stitched: P {joint['period']:.6f} d, depth {joint['depth_ppm']:.0f} ppm, {joint['n_transits']} transits."
+        joint["t0_bjd_tdb"] = bjd(joint["t0"])
+        out["summary"] += (f" Stitched ephemeris: P = {joint['period']:.6f} +/- {joint['period_err_est']:.6f} d, T0 = {joint['t0_bjd_tdb']:.5f} BJD_TDB, "
+                           f"depth {joint['depth_ppm']:.0f} ppm, {joint['n_transits']} transits.")
+        out["record"] = _record(s, joint, agree, usable, sectors)
     out["next_actions"] = []
     png = None
     if r["stitched"] is not None and joint:

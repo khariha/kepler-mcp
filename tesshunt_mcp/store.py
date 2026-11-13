@@ -7,8 +7,9 @@ DATA = os.environ.get("TESSHUNT_MCP_DATA", os.path.join(ROOT, "data", "mcp"))
 VERSION = "5"   # bump to invalidate cached results when the science changes
 
 
-def clean(o, sig=7):
-    """Make o JSON-safe: numpy scalars to Python, NaN/inf to None, floats rounded to `sig` significant figures."""
+def clean(o, sig=12):
+    """Make o JSON-safe: numpy scalars to Python, NaN/inf to None, floats rounded to `sig` significant figures
+    (12 by default: a BJD epoch needs 12 to keep five decimals)."""
     import numpy as np
     if isinstance(o, dict):
         return {str(k): clean(v, sig) for k, v in o.items()}

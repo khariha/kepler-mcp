@@ -2,6 +2,35 @@
 
 Background for reading tool output. Not evidence about any star: claims about a star come from tool runs on that star.
 
+## Terminology
+Wording follows AAS-journal and TESS follow-up usage.
+
+| This server | In a manuscript or on ExoFOP |
+|---|---|
+| lead (unvetted) | transit-like signal |
+| verdict `candidate` | planet candidate (PC) |
+| verdict `eclipsing_binary` | false positive (FP): eclipsing binary (EB) |
+| verdict `blend_or_off_target` | false positive (FP): nearby eclipsing binary (NEB), or off-target / blended signal |
+| verdict `systematics_or_noise` | false alarm (FA) |
+| verdict `known_object` | known planet (KP), confirmed planet (CP), TOI or CTOI: say which |
+| verdict `inconclusive` | inconclusive |
+| follow-up `repeats` | recovered in N of M Sectors |
+| `on_target` | centroid and difference image consistent with the target |
+| `off_target` | centroid offset |
+| `not_transit_shaped` | not transit-like (V-shaped, too long, or odd-even mismatch) |
+| patch | field, or target set |
+
+- Disposition codes here are this server's labels in the community's style. Only the TESS Follow-up Observing Program Working Group assigns TFOPWG dispositions, and only the TESS project assigns TOI numbers. "Ambiguous planet candidate" (APC) is theirs to assign.
+- Verbs: detected, identified, recovered, consistent with. "Validated" applies only with a statistical false-positive probability below 0.015 and a nearby false-positive probability below 0.001 (Giacalone et al. 2021), which this server does not compute. Never "confirmed" or "discovered" for a signal from this server.
+- A secondary-eclipse result is stated with its phase range: "no secondary eclipse over phases 0.15-0.85 (< N ppm)".
+- A false-positive probability is quoted only beside the all-phase secondary result.
+- Times in a manuscript or an ExoFOP upload are BJD_TDB. BTJD (BJD_TDB - 2457000) is internal; every epoch also comes as `*_bjd_tdb`.
+- Units: R_Earth, d, h, ppm, K. Uncertainties as value +/- 1 sigma. Significance as S/N or N sigma.
+- TESS, TIC, TOI, CTOI in capitals; "Sector 7". Stellar parameters are from TIC v8 unless a result says otherwise.
+
+## The record
+A follow-up that recovers a signal returns `record`: `tic_id, tmag, epoch_bjd_tdb, period_d, depth_ppm, duration_h, rp_rearth, snr, sectors`, each with an uncertainty, plus notes (odd-even depth difference, secondary limit with phase range, Sectors recovered, stellar-parameter source). The uncertainties are box-fit estimates. A transit-model fit is required before the row goes into a table or an upload.
+
 ## What a planet candidate needs
 1. A dip that repeats at a fixed period, in every sector that observed the star with enough quality to see it.
 2. A shape a small body can make: short compared with the orbit, no longer than the star's density allows, same depth on odd and even transits.
@@ -11,7 +40,7 @@ Background for reading tool output. Not evidence about any star: claims about a 
 
 Passing all five makes a **candidate**. Confirmation takes other instruments: spectra for a mass, high-resolution imaging for hidden companions.
 
-## Common impostors and the test that catches each
+## Common false positives and the test for each
 - **Eclipsing binary, circular.** A second, shallower eclipse at phase 0.5, or odd and even depths that differ (true period is twice the detected one).
 - **Eclipsing binary, eccentric.** The second eclipse sits away from phase 0.5 (0.54, 0.3, anywhere). A test that looks only at 0.5 passes it. `vet_signal` scans every phase from 0.15 to 0.85; the full phase-curve panel shows it directly.
 - **Spotted rotating star.** A smooth wave, not a box: the "dip" lasts a large fraction of the period and exceeds the physical maximum duration. Periods under a day with durations of many hours are almost always this.

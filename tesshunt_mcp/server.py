@@ -34,10 +34,21 @@ Workflows
 
 Results
 - summary: what was measured or decided. next_actions: suggested calls with complete arguments. caveats: limits of this result.
-- Units: times BTJD (BJD - 2457000), depths ppm, durations hours, periods days. Significance is against measured scatter.
+- Units: t0 in BTJD (BJD_TDB - 2457000) with BJD_TDB alongside; depths ppm; durations h; periods d; radii R_Earth. Significance is against measured scatter.
+- Terms: a "lead" is an unvetted transit-like signal; a "patch" is a field of about 150 target stars.
+
+Conduct
+- Before a step that takes more than a few seconds, or that runs a command on the user's computer, state in one or two sentences what it does, what it
+  reads and sends, and how long it takes. Wait for the user's go-ahead before running a command on their computer. Do not start silently.
+- While a long step runs, relay its progress lines. After each step, state the result and the next step before taking it.
 
 Rules
-- Report "planet candidate", never "planet" or "discovered". Confirmation requires other instruments.
+- Wording follows AAS-journal and TESS follow-up usage. Write "planet candidate", "transit-like signal", "false positive", "false alarm",
+  "identified", "recovered in N of M Sectors", "consistent with". Never "planet", "discovered", "confirmed" or "validated" for a signal from this server.
+- State a secondary-eclipse result with its phase range. State a false-positive probability only beside the all-phase secondary result.
+- TESS, TIC, TOI, CTOI in capitals; "Sector 7". Manuscripts and ExoFOP take BJD_TDB: use the *_bjd_tdb fields, not BTJD.
+- `disposition` codes (PC, FP, FA, KP) are this server's labels in the community's style, not TFOPWG dispositions. Never assign a TOI number.
+- A follow-up that recovers the signal returns `record`: one row in RNAAS-table and ExoFOP-CTOI shape, with estimated uncertainties.
 - State only numbers returned by a tool in this conversation. The guide is background, not evidence.
 - One sector is not sufficient. A candidate repeats across sectors and shows no secondary eclipse.
 - A tool or archive error is a retry condition, not a result about the star.
@@ -197,7 +208,7 @@ async def job_status(job_id: str, ctx: Context, wait_s: float = 20.0) -> list:
     return _content({"state": "done", **result}, png)
 
 
-VERDICTS = ("candidate", "eclipsing_binary", "blend_or_off_target", "systematics_or_noise", "known_object", "undecided")
+VERDICTS = ("candidate", "eclipsing_binary", "blend_or_off_target", "systematics_or_noise", "known_object", "inconclusive", "undecided")
 DECIDING = ("centroid", "secondary", "odd_even", "duration", "recovery", "catalog", "dilution", "snr", "other")
 
 
@@ -211,7 +222,8 @@ async def report_verdict(tic: int, verdict: str, reason: str, ctx: Context, hold
     if deciding_test not in DECIDING:
         raise ToolError(f"deciding_test must be one of {', '.join(DECIDING)}")
     sid = store.session_id(dict(ctx.headers) if ctx.headers else {})
-    out = {"recorded": True, "tic": int(tic), "verdict": verdict, "hold": bool(hold)}
+    code, wording = core.DISPOSITION[verdict]
+    out = {"recorded": True, "tic": int(tic), "verdict": verdict, "disposition": code, "disposition_wording": wording, "hold": bool(hold)}
     store.trace(sid, "report_verdict", {"tic": int(tic), "verdict": verdict, "hold": bool(hold), "deciding_test": deciding_test,
                                         "reason": reason[:600], "tools_seen": store.seen(sid, tic)}, out, 0, False)
     return out
@@ -260,20 +272,21 @@ async def next_lead(hunter_id: str, ctx: Context, star_type: str | None = None, 
     if lead is None:
         avail = _lead_call(leads.available, hunter_id)
         if avail["open_for_you"] and (star_type or planet_size):
-            return {"lead": None, "available": avail, "summary": "No open lead matches the filter. See available for counts by star type and size.",
+            return {"lead": None, "available": avail, "summary": "No unvetted signal matches the filter. See available for counts by star type and size.",
                     "next_actions": [core.act("next_lead", "next lead without a filter", hunter_id=hunter_id)]}
         return {"lead": None, "available": avail,
-                "summary": "No open leads for this handle. New leads come from searching patches of unsearched sky (about 150 stars, about seven minutes on the user's computer).",
+                "summary": "No unvetted signals for this handle. New signals come from searching fields (patches) of about 150 unsearched stars, about seven minutes on the user's computer.",
                 "next_actions": [core.act("open_patch", "search an unsearched patch", hunter_id=hunter_id), core.act("sky_map", "coverage and patches ready")]}
     star = lead["star"]
     sig = {"period_d": lead["period_d"], "t0": lead["t0"], "duration_h": lead["duration_h"]}
     kind = f"{lead['star_type']} star" if lead.get("star_type") else "star"
     tm = f", Tmag {star['Tmag']:.1f}" if star.get("Tmag") is not None else ""
-    size = f" Implies {lead['radius_earth_if_planet']:.1f} Earth radii if planetary." if lead.get("radius_earth_if_planet") else ""
-    origin = ("Practice lead: a known star kept for testing." if lead.get("practice")
-              else (f"From a patch searched by {lead['found_by']}. Unvetted." if lead.get("found_by") else "Unvetted."))
-    lead["summary"] = (f"Lead {lead['lead_id']}. TIC {lead['tic']}, {kind}{tm}, sector {lead['sector']}. Search: {lead['depth_ppm']:.0f} ppm dip, "
-                       f"P {lead['period_d']:.4f} d, SNR {lead['search_snr']:.1f}.{size} {origin}")
+    size = f" Rp = {lead['radius_earth_if_planet']:.1f} R_Earth if planetary." if lead.get("radius_earth_if_planet") else ""
+    origin = ("Practice signal: a known star kept for testing." if lead.get("practice")
+              else (f"Identified in a field searched by {lead['found_by']}. Not yet vetted." if lead.get("found_by") else "Not yet vetted."))
+    lead["t0_bjd_tdb"] = core.bjd(lead["t0"])
+    lead["summary"] = (f"Signal {lead['lead_id']} (lead_id). TIC {lead['tic']}, {kind}{tm}, Sector {lead['sector']}. BLS: depth {lead['depth_ppm']:.0f} ppm, "
+                       f"P = {lead['period_d']:.4f} d, S/N {lead['search_snr']:.1f}.{size} {origin}")
     lead["available"] = _lead_call(leads.available, hunter_id)
     lead["next_actions"] = [core.act("catalog_check", "prior claims on this star", tic=lead["tic"]),
                             core.act("vet_signal", "false-positive tests", tic=lead["tic"], sector=lead["sector"], **sig),
@@ -326,16 +339,18 @@ async def submit_vet(hunter_id: str, lead_id: int, verdict: str, reason: str, ct
     status, info = _lead_call(leads.record, hunter_id, lead_id, verdict, hold, deciding_test, reason, auto, store.seen(sid, lead["tic"]))
     me = leads.stats(hunter_id); bd = leads.board(limit=1)
     if status == "surviving":
-        summary = f"Lead {lead_id}: surviving. Two candidate verdicts and agreement from the server's results. Listed on the board as an unconfirmed planet candidate."
+        summary = f"Signal {lead_id}: planet candidate. Two independent candidate verdicts and agreement from the server's results. Listed on the board."
     elif status == "cleared":
-        summary = f"Lead {lead_id}: cleared. Not a planet candidate. Server reading: {auto}."
+        summary = f"Signal {lead_id}: closed as {wording}. Server reading: {auto}."
     elif verdict == "candidate" and info["server_agrees_candidate"]:
-        summary = f"Lead {lead_id}: open. Candidate verdict recorded and the server's results agree. Awaiting a second independent vet."
+        summary = f"Signal {lead_id}: open. Candidate verdict recorded and the server's results agree. Awaiting a second independent vetting."
     elif verdict == "candidate":
-        summary = f"Lead {lead_id}: open. Candidate verdict recorded; the server's results read it as {auto}, so it cannot be listed. Awaiting another vet."
+        summary = f"Signal {lead_id}: open. Candidate verdict recorded; the server's results read it as {auto}, so it cannot be listed. Awaiting another vetting."
     else:
-        summary = f"Lead {lead_id}: open. Verdict recorded; the server's results read it as {auto}. Awaiting another vet."
-    out = {"lead_id": int(lead_id), "lead_status": status, "server_reading": auto, **info, "summary": summary,
+        summary = f"Signal {lead_id}: open. Verdict recorded ({wording}); the server's results read it as {auto}. Awaiting another vetting."
+    code, wording = core.DISPOSITION[verdict]
+    out = {"lead_id": int(lead_id), "lead_status": status, "verdict": verdict, "disposition": code, "disposition_wording": wording,
+           "server_reading": auto, **info, "summary": summary,
            "handle_tally": me, "board": {k: bd[k] for k in ("leads_total", "leads_open", "leads_cleared", "leads_surviving")},
            "next_actions": [core.act("next_lead", "next unvetted lead", hunter_id=hunter_id)]}
     store.trace(sid, "submit_vet", {"tic": lead["tic"], "lead_id": int(lead_id), "verdict": verdict, "hold": bool(hold), "deciding_test": deciding_test,
@@ -363,7 +378,8 @@ def hunt() -> str:
     return """Procedure: vet leads with Kepler.
 
 1. join(handle, recovery_word) if there is no hunter_id yet. The same pair signs back in later.
-2. next_lead(hunter_id), with star_type or planet_size if a kind was requested. If none: open_patch(hunter_id), run its command, patch_status, then next_lead.
+2. next_lead(hunter_id), with star_type or planet_size if a kind was requested. If none: open_patch(hunter_id); state its `procedure` and `duration`
+   and get a go-ahead; run its command and relay the progress lines; patch_status; then next_lead.
 3. Run the lead's next_actions with the given arguments: catalog_check, vet_signal, followup_start, then job_status until done. Add neighbors with the lead's depth.
 4. Decide: candidate, eclipsing_binary, blend_or_off_target, systematics_or_noise, known_object, or undecided. Cite the deciding numbers.
 5. submit_vet(hunter_id, lead_id, verdict, reason, deciding_test). Report the lead's new status.
@@ -440,11 +456,11 @@ async def sky_map(ctx: Context, sector: int | None = None) -> dict:
         if nxt:
             out["detectors_being_mapped"] = [{"sector": nxt[0], "camera": nxt[1], "ccd": nxt[2], "star_type": "red"}]
     if t["patches"] == 0:
-        out["summary"] = "No patches mapped yet. The first detector is being mapped; patches are ready in about five minutes."
+        out["summary"] = "No fields mapped yet. The first detector is being mapped; fields are ready in about five minutes."
         out["next_actions"] = []
     else:
-        out["summary"] = (f"{t['searched']} of {t['patches']} mapped patches searched ({t['stars_searched']} stars), {t['leads_found']} lead(s) found, "
-                          f"{t['unopened']} unopened, {t['in_progress']} in progress.")
+        out["summary"] = (f"{t['searched']} of {t['patches']} mapped fields searched ({t['stars_searched']} stars), {t['leads_found']} transit-like signal(s) identified, "
+                          f"{t['unopened']} not yet searched, {t['in_progress']} in progress.")
         out["next_actions"] = []
     return out
 
@@ -470,8 +486,14 @@ async def open_patch(hunter_id: str, ctx: Context, patch_id: str | None = None, 
     store.trace(_sid(ctx), "open_patch", {"patch_id": p["id"]}, {"patch_id": p["id"]}, 0, False)
     return {"patch_id": p["id"], "sector": p["sector"], "star_type": p["pop"], "stars": p["n_stars"], "held_minutes": int((p["claimed_until"] - time.time()) / 60),
             "command": cmd, "resumed": p["resumed"], "detectable": sky.POPULATIONS[p["pop"]]["finds"],
-            "summary": (f"Patch {p['id']} claimed: {p['n_stars']} unsearched {p['pop']} stars, sector {p['sector']}. Run `command` on the user's computer "
+            "summary": (f"Field {p['id']} claimed: {p['n_stars']} unsearched {p['pop']} stars, Sector {p['sector']}. Run `command` on the user's computer "
                         "(about seven minutes; Python 3.11+; first run installs the science libraries). It uploads one row per star."),
+            "procedure": ["The hub sends the list of target stars for this field.",
+                          "For each star the helper reads its pixels from NASA's public TESS full-frame images (MAST archive), builds a light curve, and runs a box-least-squares transit search.",
+                          "One row of numbers per star is uploaded; no files, credentials or personal data.",
+                          "The hub re-runs every star the upload flags, and one unflagged star, before any signal is queued for vetting."],
+            "duration": f"about {max(1, round(p['n_stars'] / 22))} minutes for {p['n_stars']} stars on a laptop; progress prints as a bar with stars done and signals so far",
+            "run_in": "foreground if possible, so the progress bar is visible; if run in the background, relay its lines as they arrive",
             "next_actions": [core.act("patch_status", "result of the search, after the command finishes", patch_id=p["id"])]}
 
 
@@ -487,16 +509,16 @@ async def patch_status(patch_id: str, ctx: Context, wait_s: float = 20.0) -> dic
         await anyio.sleep(1.0)
     out = {"patch_id": patch_id, "status": p["status"], "stars": p["n_stars"], "opened_by": p["opened_by"], "signals_flagged": p["n_flagged"], "leads": p["n_leads"]}
     if p["status"] == "done":
-        out["summary"] = f"Patch {patch_id}: searched and stored. {p['n_leads']} lead(s) passed the hub's re-check" + (f", credited to {p['opened_by']}." if p["n_leads"] else ".")
+        out["summary"] = f"Field {patch_id}: searched and stored. {p['n_leads']} transit-like signal(s) reproduced by the hub" + (f"; identified by {p['opened_by']}." if p["n_leads"] else ".")
         out["next_actions"] = []
     elif p["status"] == "verifying":
-        out["summary"] = f"Patch {patch_id}: upload received. Re-running {p['n_flagged']} flagged star(s)."
+        out["summary"] = f"Field {patch_id}: upload received. Re-running {p['n_flagged']} flagged star(s)."
         out["next_actions"] = [core.act("patch_status", "verification result", patch_id=patch_id)]
     elif p["status"] == "claimed":
-        out["summary"] = f"Patch {patch_id}: claimed by {p['opened_by']}, no upload yet."
+        out["summary"] = f"Field {patch_id}: claimed by {p['opened_by']}, no upload yet."
         out["next_actions"] = [core.act("patch_status", "after the search command finishes", patch_id=patch_id)]
     else:
-        out["summary"] = f"Patch {patch_id}: unopened." + (f" Last upload rejected: {p['note']}" if p.get("note") else "")
+        out["summary"] = f"Field {patch_id}: not yet searched." + (f" Last upload rejected: {p['note']}" if p.get("note") else "")
         out["next_actions"] = []
     return out
 
