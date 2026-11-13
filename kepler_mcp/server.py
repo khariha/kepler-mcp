@@ -575,7 +575,7 @@ async def sky_map(ctx: Context, sector: int | None = None) -> dict:
         out["keep_polling"] = t["unopened"] == 0
     if t["patches"] == 0:
         out["summary"] = "No fields mapped yet. The first detector is being mapped; fields are ready in about five minutes."
-        out["next_actions"] = [core.act("sky_map", "REQUIRED now, in this same turn: mapping is still running")] if mapping else []
+        out["next_actions"] = [core.act("sky_map", "mapping is still running: call again to see progress")] if mapping else []
     else:
         out["summary"] = (f"{t['searched']} of {t['patches']} mapped fields searched ({t['stars_searched']} stars), {t['leads_found']} transit-like signal(s) identified, "
                           f"{t['unopened']} not yet searched, {t['in_progress']} in progress.")
@@ -602,7 +602,7 @@ async def open_patch(hunter_id: str, ctx: Context, patch_id: str | None = None, 
                 "ready_now": sky.summary()["unopened_by_star_type"],
                 "display": "\n".join(m["display"] for m in sky.map_progress() if m["pop"] == kind) or R.line("FIELD", f"no {kind} field ready"),
                 "keep_polling": bool(nxt),
-                "next_actions": ([core.act("open_patch", "REQUIRED in this same turn, after about a minute: mapping is still running", hunter_id=hunter_id, star_type=kind)]
+                "next_actions": ([core.act("open_patch", "mapping is still running: call again in about a minute", hunter_id=hunter_id, star_type=kind)]
                                  if nxt else [])}
     cmd = f"{SWEEP_CMD} {p['id']} --hunter {hunter_id} --hub {_base_url(ctx)}"
     store.trace(_sid(ctx), "open_patch", {"patch_id": p["id"]}, {"patch_id": p["id"]}, 0, False)
@@ -658,7 +658,7 @@ async def patch_status(patch_id: str, ctx: Context, wait_s: float = 20.0) -> dic
         out["display"] = "\n".join([f"KEPLER \u00b7 FIELD {patch_id}".ljust(54) + "VERIFYING".rjust(12), sky.RULE,
                                      f" UPLINK   {p['n_stars']} rows received", f" VERIFY   hub re-running {p['n_flagged']} flagged star(s)", sky.RULE])
         out["keep_polling"] = True
-        out["next_actions"] = [core.act("patch_status", "REQUIRED now, in this same turn: the hub is still verifying", patch_id=patch_id)]
+        out["next_actions"] = [core.act("patch_status", "the hub is still verifying: call again for the result", patch_id=patch_id)]
     elif p["status"] == "claimed" and prog is not None:
         out["status"] = "searching"
         out["progress"] = {k: v for k, v in prog.items() if k != "display"}
@@ -666,11 +666,11 @@ async def patch_status(patch_id: str, ctx: Context, wait_s: float = 20.0) -> dic
         out["summary"] = (f"Field {patch_id}: searching, {prog['stars_done']} of {prog['stars_total']} stars, {prog['signals_so_far']} signal(s) so far"
                           + (f", about {prog['minutes_left']} min left." if prog["minutes_left"] is not None else "."))
         out["keep_polling"] = True
-        out["next_actions"] = [core.act("patch_status", "REQUIRED now, in this same turn: the search is still running", patch_id=patch_id)]
+        out["next_actions"] = [core.act("patch_status", "the search is still running: call again for progress", patch_id=patch_id)]
     elif p["status"] == "claimed":
         out["summary"] = f"Field {patch_id}: claimed by {p['opened_by']}; the search has not reported yet."
         out["keep_polling"] = True
-        out["next_actions"] = [core.act("patch_status", "REQUIRED now, in this same turn, if the search command has been started", patch_id=patch_id)]
+        out["next_actions"] = [core.act("patch_status", "once the search command is running, call again for progress", patch_id=patch_id)]
     else:
         out["summary"] = f"Field {patch_id}: not yet searched." + (f" Last upload rejected: {p['note']}" if p.get("note") else "")
         out["next_actions"] = []
