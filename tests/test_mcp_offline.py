@@ -111,7 +111,7 @@ def test_server_registers_tools_and_guide():
     assert names == {"resolve_star", "catalog_check", "light_curve", "search_transits", "vet_signal", "neighbors", "fold_plot",
                      "followup_start", "job_status", "report_verdict", "read_guide",
                      "lesson", "join", "next_lead", "submit_vet", "board", "my_progress",
-                     "sky_map", "open_patch", "patch_status", "welcome"}
+                     "sky_map", "open_patch", "patch_status", "find_planets"}
     g = server._guide()
     import re as _re
     assert "eccentric" in g and not _re.search(r"TIC \d", g)          # the reference names no particular star
@@ -390,7 +390,7 @@ def test_register_is_instrument_not_tour_guide():
     assert server.WELCOME.startswith("KEPLER MCP BY GENERATIVE EXPERIENCES") and "HOW TO USE" in server.WELCOME and "!" not in server.WELCOME
     texts = {"instructions": server.INSTRUCTIONS}
     for t in tools:
-        if t.name not in ("lesson", "welcome"):                  # the lesson keeps its teaching voice; the welcome notice is its own test
+        if t.name not in ("lesson", "find_planets"):                  # the lesson keeps its teaching voice; the welcome notice is its own test
             texts["tool " + t.name] = t.description or ""
     for k, v in {**core.SUMMARY_VET, **core.SUMMARY_FOLLOW}.items():
         texts["summary " + k] = v
