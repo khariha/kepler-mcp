@@ -599,11 +599,14 @@ WELCOME = """KEPLER TRANSIT SURVEY
 
 Welcome. This service searches NASA TESS full-frame
 images for transit-like signals and vets them against
-known false positives. Results are planet candidates;
-confirmation requires other instruments.
+known false positives.
 
-You may search an unsearched field, vet a queued
-signal, or check a named star."""
+HOW TO USE
+Search an unsearched field, vet a queued signal, or
+check a named star. The individual tools are also
+available for independent exploration. Claude has the
+full context of this service and can answer questions
+at any point."""
 
 
 @mcp.tool(title="Welcome", annotations=READ)
