@@ -14,7 +14,7 @@ import anyio
 from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import ToolAnnotations
+from mcp.types import Icon, ToolAnnotations
 
 from kepler_mcp import core, leads, sky, store
 from kepler_mcp import readout as R
@@ -92,7 +92,9 @@ mcp = MCPServer("kepler", title="Kepler: find planets in NASA TESS data",
                 description="Find planets: search NASA TESS space-telescope data for exoplanets crossing their stars, check any star for a planet, "
                             "and vet planet candidates. Planet hunting, exoplanet search, transit detection and vetting.",
                 instructions=INSTRUCTIONS,
-                website_url="https://github.com/khariha/kepler-mcp", version=VERSION)
+                website_url="https://github.com/khariha/kepler-mcp", version=VERSION,
+                icons=[Icon(src=f"{os.environ.get('KEPLER_PUBLIC_URL', 'https://kepler.genexperiences.com').rstrip('/')}/icon-{n}.png",
+                            mimeType="image/png", sizes=[f"{n}x{n}"]) for n in (512, 192, 64)])
 
 
 async def _run(tool, cls, ctx, args, fn, cacheable=True):
@@ -929,6 +931,23 @@ async def patch_post(request):
     return JSONResponse({"received": True, "status": "verifying", "signals_flagged": len(flagged)})
 
 
+@mcp.custom_route("/icon-{size:int}.png", methods=["GET"])
+async def icon_png(request):
+    """The Kepler icon (web/brand), for MCP clients, the directory and browser tabs."""
+    from starlette.responses import Response
+    size = request.path_params["size"]
+    f = _WEB / "brand" / f"kepler-icon-{size}.png"
+    if size not in (512, 192, 64, 32) or not f.exists():
+        return Response(status_code=404)
+    return Response(f.read_bytes(), media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@mcp.custom_route("/favicon.ico", methods=["GET"])
+async def favicon(request):
+    from starlette.responses import Response
+    return Response((_WEB / "brand" / "kepler-icon-32.png").read_bytes(), media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
+
 @mcp.custom_route("/privacy", methods=["GET"])
 async def privacy_page(request):
     """The privacy policy (web/privacy.html; source text docs/privacy.md)."""
@@ -968,7 +987,7 @@ async def board_html(request):
     sectors = ", ".join(str(x) for x in sk["open_sectors"])
     # Idiom: engineering datasheet (black on paper, 14px, square, tables, dot screens). Built from scratch; no third-party CSS or fonts.
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Kepler board</title><style>
+<title>Kepler board</title><link rel="icon" href="/icon-64.png"><style>
 html{{font-size:14px;line-height:1.5rem;background:#eee}} *{{box-sizing:border-box}}
 body{{font-family:"Inter Tight","Archivo","Helvetica Neue",Helvetica,Arial,system-ui,sans-serif;color:#000;background:#fff;max-width:720px;margin:2rem auto;
 padding:1rem 1.2rem;border:1px solid #888;box-shadow:2px 2px #ccc;text-rendering:optimizeLegibility}}
