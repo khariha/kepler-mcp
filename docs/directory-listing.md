@@ -34,6 +34,21 @@ Questions: mcp-review@anthropic.com. Requirements source: https://claude.com/doc
 3. "Search a patch of unsearched sky for planets." (opens the Field Search Tool in the browser; about six minutes, no install)
 4. "Is TOI-700 b visible in TESS Sector 4, and how deep is the transit?"
 
+## Use cases (form step 4; shown to reviewers only)
+| Use case | Example prompt |
+|---|---|
+| Check a star for a transiting planet | Does Pi Mensae have a transiting planet? Check it with Kepler. |
+| Vet a signal from the shared queue | Give me a signal to vet and walk me through whether it's a planet candidate. |
+| Search unsearched sky for new candidates | Search a patch of unsearched sky for planets. |
+
+**Prerequisites:** None. No account, sign-in or API key: the server is authless and reads only public NASA and ESA archives.
+Optional: a public handle and recovery word, chosen in the chat, to vet signals or search new sky with credit on the board.
+Searching new sky opens the Field Search Tool in a web browser (a recent desktop browser; nothing to install).
+
+**Read/write capabilities:** Read and write. Most tools only read public archives; `join`, `next_lead`, `submit_vet`,
+`report_verdict` and `open_patch` write to Kepler's own records (a handle, a lead claim, a verdict, a field claim).
+None is destructive, and none writes to any outside service or account.
+
 ## Tools (all have a title and hints)
 Read-only (readOnlyHint true): resolve_star, catalog_check, light_curve, search_transits, vet_signal, neighbors,
 fold_plot, followup_start, job_status, read_guide, lesson, find_planets, board, my_progress, sky_map, patch_status.
