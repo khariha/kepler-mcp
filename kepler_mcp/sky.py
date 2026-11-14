@@ -99,6 +99,7 @@ def map_progress(now=None):
     now = now or time.time()
     out = []
     with _lock, _db() as c:
+        _drop_orphans(c)
         building = [dict(r) for r in c.execute("select sector, camera, ccd, pop from ccds where status='building'")]
     for b in building:
         g = _mapping.get((b["sector"], b["camera"], b["ccd"], b["pop"])) or {"started": now, "cone": 0, "cones": 4, "stars": 0}
@@ -111,8 +112,20 @@ def map_progress(now=None):
     return out
 
 
+_building_here = set()   # detectors this process is mapping. Mapping runs in a background thread, so a restart (every deploy) kills it.
+
+
+def _drop_orphans(c):
+    """A detector marked 'building' that this process is not mapping was interrupted by a restart: mark it failed so it is mapped again."""
+    for r in c.execute("select sector, camera, ccd, pop from ccds where status='building'").fetchall():
+        if (r["sector"], r["camera"], r["ccd"], r["pop"]) not in _building_here:
+            c.execute("update ccds set status='failed: interrupted by a restart' where sector=? and camera=? and ccd=? and pop=?",
+                      (r["sector"], r["camera"], r["ccd"], r["pop"]))
+
+
 def ccd_status(sector, camera, ccd, pop="red"):
     with _lock, _db() as c:
+        _drop_orphans(c)
         r = c.execute("select status from ccds where sector=? and camera=? and ccd=? and pop=?", (sector, camera, ccd, pop)).fetchone()
         return r["status"] if r else None
 
@@ -120,6 +133,10 @@ def ccd_status(sector, camera, ccd, pop="red"):
 def mark_ccd(sector, camera, ccd, status, pop="red"):
     with _lock, _db() as c:
         c.execute("insert or replace into ccds values (?,?,?,?,?,?,?)", (sector, camera, ccd, pop, status, 0, time.time()))
+    if status == "building":
+        _building_here.add((sector, camera, ccd, pop))
+    else:
+        _building_here.discard((sector, camera, ccd, pop))
 
 
 # ---------------- claiming ----------------

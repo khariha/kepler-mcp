@@ -574,3 +574,14 @@ def test_queue_and_mapping_readbacks(tmp_data):
     m = sky.map_progress(now=1060)
     assert len(m) == 1 and "MAPPING Sector 7, camera 1, detector 2, orange stars" in m[0]["display"] and "cone 2 of 4" in m[0]["display"] and "4,310 stars" in m[0]["display"]
     assert all(len(x) <= 66 for x in m[0]["display"].split("\n"))
+
+
+def test_mapping_interrupted_by_restart_is_retried(tmp_path, monkeypatch):
+    """A detector left 'building' by a killed process must read as failed, so open_patch maps it again."""
+    from kepler_mcp import sky, store
+    monkeypatch.setattr(store, "DATA", str(tmp_path))
+    sky.mark_ccd(7, 1, 1, "building", "yellow")
+    assert sky.ccd_status(7, 1, 1, "yellow") == "building"          # this process is mapping it
+    sky._building_here.clear()                                        # what a restart looks like
+    assert sky.ccd_status(7, 1, 1, "yellow").startswith("failed")
+    assert sky.map_progress() == []
