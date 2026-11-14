@@ -426,18 +426,31 @@ def search_transits(tic, sector, min_period_d=0.3, max_period_d=13.0, min_snr=9.
     return out, _png(fig)
 
 
+GAIA_TIMEOUT_S = float(os.environ.get("KEPLER_GAIA_TIMEOUT", 20))
+_neighbor_cache = {}
+
+
 def _neighbors(s, tpf, sector=None):
     """(table, target_x, target_y, source). Gaia DR3 from the ESA archive; the TESS Input Catalog when that is down."""
     import contextlib
     from tesshunt.vetting import gaia_neighbors, tic_neighbors
+    from tesshunt.sweep_core import _with_deadline
     ra, dec = position_at(s, sector) if sector is not None else (s["ra"], s["dec"])
+    key = (int(s["ID"]), sector)
+    if key in _neighbor_cache:
+        return _neighbor_cache[key]
     try:
+        # The ESA archive sometimes accepts the query and then never finishes it: give it GAIA_TIMEOUT_S, then use the TIC.
         with contextlib.redirect_stdout(io.StringIO()):   # astroquery prints the archive's error page
-            g, (tx, ty) = gaia_neighbors(ra, dec, tpf)
-        return g, tx, ty, "Gaia DR3 (G band)"
+            g, (tx, ty) = _with_deadline(lambda: gaia_neighbors(ra, dec, tpf), GAIA_TIMEOUT_S, "Gaia neighbours")
+        out = (g, tx, ty, "Gaia DR3 (G band)")
     except Exception:
         g, (tx, ty) = tic_neighbors(ra, dec, tpf)
-        return g, tx, ty, "TESS Input Catalog (TESS band); ESA Gaia archive was unreachable"
+        out = (g, tx, ty, "TESS Input Catalog (TESS band); the ESA Gaia archive did not answer in time")
+    _neighbor_cache[key] = out
+    while len(_neighbor_cache) > 200:
+        _neighbor_cache.pop(next(iter(_neighbor_cache)))
+    return out
 
 
 def _neighbor_rows(g, depth_ppm=None, within_px=3.0):

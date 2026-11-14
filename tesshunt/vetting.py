@@ -25,8 +25,13 @@ def gaia_neighbors(ra, dec, tpf, radius_arcsec=45):
     from astroquery.gaia import Gaia
     from astropy.coordinates import SkyCoord
     import astropy.units as u
-    Gaia.ROW_LIMIT = 50
-    g = Gaia.cone_search_async(SkyCoord(ra, dec, unit="deg"), radius=radius_arcsec * u.arcsec).get_results().to_pandas()
+    # A synchronous ADQL cone: the async job API (cone_search_async) was accepting queries and then not finishing them (Nov 2026).
+    q = (f"SELECT TOP 50 source_id, ra, dec, phot_g_mean_mag, parallax FROM gaiadr3.gaia_source "
+         f"WHERE 1 = CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', {float(ra)}, {float(dec)}, {radius_arcsec / 3600.0}))")
+    g = Gaia.launch_job(q).get_results().to_pandas()
+    g = g.rename(columns={c: c.lower() for c in g.columns})
+    if g.empty:
+        raise LookupError("Gaia returned no sources at this position")
     px, py = tpf.wcs.all_world2pix(g.ra.values, g.dec.values, 0)
     tx, ty = tpf.wcs.all_world2pix([ra], [dec], 0)
     g["dx_px"], g["dy_px"] = px - float(tx[0]), py - float(ty[0])
