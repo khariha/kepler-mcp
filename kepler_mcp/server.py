@@ -979,13 +979,25 @@ async def board_html(request):
     e = html.escape
     sk = sky.summary(); st = sk["totals"]; cv = sk["coverage"]; pct = cv["percent_of_tess_catalogued"]
     # One row per registered handle, matched without regard to case; practice and unregistered names are left out.
-    who = {h.lower(): {"handle": h, "stars": 0, "found": 0, "vetted": 0} for h in leads.handles()}
+    # Display overrides kept in the data volume (board_overrides.json), not in code:
+    #   "aliases": {"old_handle": "shown_as"} merges handles into one row; "prior_stars": {"shown_as": n} credits stars searched before Kepler.
+    try:
+        ov = json.loads(open(os.path.join(store.DATA, "board_overrides.json")).read())
+    except (OSError, ValueError):
+        ov = {}
+    alias = {k.lower(): v for k, v in (ov.get("aliases") or {}).items()}
+    shown = lambda h: alias.get((h or "").lower(), h or "")
+    who = {}
+    for h in leads.handles():
+        n = shown(h); who.setdefault(n.lower(), {"handle": n, "stars": 0, "found": 0, "vetted": 0})
+    for n, k in (ov.get("prior_stars") or {}).items():
+        who.setdefault(n.lower(), {"handle": n, "stars": 0, "found": 0, "vetted": 0})["stars"] += int(k)
     for o in sk["openers"]:
-        r = who.get((o["handle"] or "").lower())
+        r = who.get(shown(o["handle"]).lower())
         if r:
             r["stars"] += o["stars"] or 0; r["found"] += o["leads"] or 0
     for h in b["most_active"]:
-        r = who.get(h["handle"].lower())
+        r = who.get(shown(h["handle"]).lower())
         if r:
             r["vetted"] += h["leads_vetted"]
     ranked = sorted(who.values(), key=lambda r: (-r["stars"], -r["vetted"], r["handle"].lower()))
