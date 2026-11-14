@@ -952,6 +952,19 @@ async def icon_png(request):
     return Response(f.read_bytes(), media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
 
+@mcp.custom_route("/brand/{name}", methods=["GET"])
+async def brand_file(request):
+    """Listing media (logo, carousel screenshots) from web/brand, for the Connectors Directory page."""
+    from starlette.responses import Response
+    name = request.path_params["name"]
+    types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".svg": "image/svg+xml", ".webp": "image/webp", ".mp4": "video/mp4"}
+    ext = pathlib.Path(name).suffix.lower()
+    f = (_WEB / "brand" / name).resolve()
+    if ext not in types or f.parent != (_WEB / "brand").resolve() or not f.is_file():
+        return Response(status_code=404)
+    return Response(f.read_bytes(), media_type=types[ext], headers={"Cache-Control": "public, max-age=3600"})
+
+
 @mcp.custom_route("/favicon.ico", methods=["GET"])
 async def favicon(request):
     from starlette.responses import Response
