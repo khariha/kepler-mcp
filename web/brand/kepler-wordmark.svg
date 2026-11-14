@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 160" width="640" height="160" role="img" aria-label="Kepler Planet Search, Generative Experiences">
+  <title>Kepler Planet Search</title>
+  <defs>
+    <radialGradient id="star" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#fff4d8"/>
+      <stop offset="0.6" stop-color="#ffd27a"/>
+      <stop offset="1" stop-color="#f08a1c"/>
+    </radialGradient>
+    <pattern id="dots" width="3" height="3" patternUnits="userSpaceOnUse">
+      <circle cx="1.5" cy="1.5" r="0.55" class="dot"/>
+    </pattern>
+  </defs>
+  <style>
+    .ink { fill: #000; } .mute { fill: #555; } .rule { stroke: #000; } .dot { fill: #777; } .plate { fill: #0b0b0b; } .trace { stroke: #f2f2f2; }
+    .word { font: 700 64px "Inter Tight", "Helvetica Neue", Helvetica, Arial, sans-serif; letter-spacing: -1px; }
+    .sub  { font: 700 17px "JetBrains Mono", "IBM Plex Mono", "SF Mono", Menlo, monospace; letter-spacing: 3px; }
+    .by   { font: 400 14px "JetBrains Mono", "IBM Plex Mono", "SF Mono", Menlo, monospace; letter-spacing: 1px; }
+    @media (prefers-color-scheme: dark) {
+      .ink { fill: #f2f2f2; } .mute { fill: #aaa; } .rule { stroke: #f2f2f2; } .dot { fill: #888; }
+    }
+  </style>
+  <!-- icon: the listing icon's elements redrawn flat -->
+  <rect x="0" y="16" width="128" height="128" class="plate"/>
+  <circle cx="64" cy="66" r="34" fill="url(#star)"/>
+  <circle cx="78" cy="56" r="7.5" fill="#0b0b0b"/>
+  <polyline points="16,112 48,112 54,121 74,121 80,112 112,112" fill="none" class="trace" stroke-width="3.5" stroke-linejoin="round"/>
+  <g transform="translate(16,126)">
+    <rect x="0"  width="13.7" height="7" fill="#000" stroke="#555" stroke-width="0.5"/>
+    <rect x="13.7" width="13.7" height="7" fill="#003f9b"/>
+    <rect x="27.4" width="13.7" height="7" fill="#0092ff"/>
+    <rect x="41.1" width="13.7" height="7" fill="#00c986"/>
+    <rect x="54.8" width="13.7" height="7" fill="#ffb700"/>
+    <rect x="68.5" width="13.7" height="7" fill="#ff4a03"/>
+    <rect x="82.2" width="13.8" height="7" fill="#e7040f"/>
+  </g>
+  <!-- wordmark -->
+  <text x="152" y="76" class="word ink">KEPLER</text>
+  <rect x="152" y="88" width="472" height="8" fill="url(#dots)"/>
+  <text x="152" y="122" class="sub ink">PLANET SEARCH</text>
+  <text x="624" y="122" text-anchor="end" class="by mute">GENERATIVE EXPERIENCES</text>
+  <g transform="translate(152,134)">
+    <rect x="0"   width="67.4" height="6" fill="#000"/>
+    <rect x="67.4"  width="67.4" height="6" fill="#003f9b"/>
+    <rect x="134.8" width="67.4" height="6" fill="#0092ff"/>
+    <rect x="202.2" width="67.4" height="6" fill="#00c986"/>
+    <rect x="269.6" width="67.4" height="6" fill="#ffb700"/>
+    <rect x="337"   width="67.4" height="6" fill="#ff4a03"/>
+    <rect x="404.4" width="67.6" height="6" fill="#e7040f"/>
+  </g>
+</svg>
