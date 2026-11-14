@@ -46,6 +46,12 @@ def add(d, found_by=None, patch_id=None):
         return cur.lastrowid if cur.rowcount else None
 
 
+def has_lead(patch_id, tic):
+    """Was a lead queued for this star from this patch?"""
+    with _lock, _db() as c:
+        return c.execute("select 1 from leads where patch_id=? and tic=?", (patch_id, int(tic))).fetchone() is not None
+
+
 def _hash(hunter_id):
     return hashlib.sha256(("kepler-hunter:" + hunter_id).encode()).hexdigest()
 

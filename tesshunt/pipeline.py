@@ -237,6 +237,15 @@ def background_pixels(aper, clear_px=2, min_pixels=30):
     return ~aper
 
 
+def usable_regressors(reg, min_finite=0.95):
+    """Background pixels that hold data in nearly every cadence. A star near the detector edge has cutout pixels off the chip,
+    blank in every frame; requiring all pixels finite then left no cadences and the PCA crashed (TIC 5859202, Sector 7)."""
+    keep = np.isfinite(reg).mean(axis=0) >= min_finite
+    if keep.sum() < 3:
+        raise ValueError("fewer than 3 background pixels hold data; the star is too close to the detector edge")
+    return reg[:, keep]
+
+
 def drop_isolated_glitches(flat, nsigma=5.0, max_glitches=2):
     """Drop single low cadences that look like glitches (cosmic-ray hits on the background, bad frames).
 
@@ -269,8 +278,9 @@ def lightcurve_from_cutout(tpf, threshold=10, n_pca=5):
     regressors = regressors.value if hasattr(regressors, "value") else regressors
     # drop cadences where either the aperture sum or any background pixel is non-finite,
     # from BOTH the light curve and the regressors, so the design matrix rows line up
+    regressors = usable_regressors(regressors)
     good = np.isfinite(raw.flux.value) & np.isfinite(regressors).all(axis=1)
-    dm = lk.DesignMatrix(regressors[good], name="background").pca(n_pca).append_constant()
+    dm = lk.DesignMatrix(regressors[good], name="background").pca(min(n_pca, regressors.shape[1] - 1, max(int(good.sum()) - 1, 1))).append_constant()
     corrector = lk.RegressionCorrector(raw[good])
     corrected = corrector.correct(dm)
     return corrected, raw, aper

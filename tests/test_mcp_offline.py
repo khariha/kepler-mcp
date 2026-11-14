@@ -585,3 +585,32 @@ def test_mapping_interrupted_by_restart_is_retried(tmp_path, monkeypatch):
     sky._building_here.clear()                                        # what a restart looks like
     assert sky.ccd_status(7, 1, 1, "yellow").startswith("failed")
     assert sky.map_progress() == []
+
+
+def test_every_tool_has_annotations_title():
+    import anyio
+    from kepler_mcp import server
+    async def go():
+        return await server.mcp.list_tools()
+    tools = anyio.run(go)
+    assert all(t.annotations and t.annotations.title == t.title for t in tools), [t.name for t in tools if not (t.annotations and t.annotations.title)]
+
+
+def test_usable_regressors_drops_off_chip_pixels():
+    import numpy as np
+    from tesshunt import pipeline as P
+    reg = np.random.default_rng(0).normal(size=(500, 40)); reg[:, :12] = np.nan      # 12 pixels off the detector
+    out = P.usable_regressors(reg)
+    assert out.shape == (500, 28) and np.isfinite(out).all()
+
+
+def test_flagged_rows_keeps_only_lead_bar_rows(tmp_path, monkeypatch):
+    import json
+    from kepler_mcp import sky, store
+    monkeypatch.setattr(store, "DATA", str(tmp_path))
+    good = {"tic": 1, "status": "ok", "period_d": 3.0, "t0": 1500.0, "duration_h": 2.0, "max_duration_h": 3.0, "depth_ppm": 3000.0,
+            "depth_err_ppm": 200.0, "snr": 15.0, "n_transits": 5, "cadence_min": 30.0}
+    quiet = dict(good, tic=2, snr=4.0)
+    with sky._db() as c:
+        c.executemany("insert into patch_rows values (?,?,?)", [("p1", r["tic"], json.dumps(r)) for r in (good, quiet)])
+    assert [r["tic"] for r in sky.flagged_rows("p1")] == [1]

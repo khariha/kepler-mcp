@@ -561,7 +561,7 @@ def _base_url(ctx):
 @mcp.tool(title="The sky map", annotations=READ)
 async def sky_map(ctx: Context, sector: int | None = None) -> dict:
     """Where planets have and have not been searched for. Search coverage per sector, detector and star type: patches searched, unopened and in progress, stars searched, leads found. A patch is
-    about 150 unsearched stars of one type, searched on the user's own computer in about seven minutes and stored for everyone. star_types
+    about 150 unsearched stars of one type, searched in the user's own browser in about six minutes and stored for everyone. star_types
     states what each type can detect. Triggers mapping of the next detector when no patch is ready."""
     out = sky.summary(sector)
     t = out["totals"]
@@ -674,6 +674,15 @@ async def patch_status(patch_id: str, ctx: Context, wait_s: float = 20.0) -> dic
                                       else " RESULT   no transit-like signal \u00b7 field recorded as searched"), sky.RULE])
         out["keep_polling"] = False
         out["next_actions"] = []
+        if p.get("note"):
+            out["note"] = p["note"]
+        # Flagged by the upload but not reproduced by the hub: not queued, but anyone may still examine them with the vetting tools.
+        unrepro = [r for r in sky.flagged_rows(patch_id) if not leads.has_lead(patch_id, r["tic"])] if p["n_flagged"] else []
+        if unrepro:
+            out["flagged_not_reproduced"] = [{k: r.get(k) for k in ("tic", "period_d", "t0", "duration_h", "depth_ppm", "snr", "n_transits")} for r in unrepro]
+            out["next_actions"] = [core.act("vet_signal", f"examine TIC {r['tic']} as the upload measured it (not queued: the hub did not reproduce it)",
+                                            tic=r["tic"], sector=p["sector"], period_d=round(r["period_d"], 6), t0=round(r["t0"], 5),
+                                            duration_h=round(r["duration_h"], 3)) for r in unrepro[:3]]
     elif p["status"] == "verifying":
         out["summary"] = f"Field {patch_id}: upload received. Re-running {p['n_flagged']} flagged star(s)."
         out["display"] = "\n".join([f"KEPLER \u00b7 FIELD {patch_id}".ljust(54) + "VERIFYING".rjust(12), sky.RULE,
@@ -715,11 +724,12 @@ def _verify_patch(pid, hunter_handle, flagged, quiet_tic):
                     return
             except Exception:
                 pass      # an archive hiccup on the spot check is not evidence against the upload
-        verified = []
+        verified, unchecked = [], []
         for r in flagged[:40]:
             try:
                 res, _ = core.search_transits(r["tic"], sector)
-            except Exception:
+            except Exception as e:
+                unchecked.append(f"TIC {r['tic']} ({type(e).__name__})")
                 continue
             mine = as_row(res)
             ratio = mine["period_d"] / r["period_d"] if r["period_d"] else 0
@@ -730,7 +740,7 @@ def _verify_patch(pid, hunter_handle, flagged, quiet_tic):
                         "depth_ppm": mine["depth_ppm"], "snr": mine["snr"], "star": {k: star.get(k) for k in ("Tmag", "Teff", "rad", "mass", "d", "contratio")}}
                 if leads.add(lead, found_by=hunter_handle, patch_id=pid):
                     verified.append(lead)
-        sky.finish(pid, verified)
+        sky.finish(pid, verified, note=(f"the hub could not re-run {len(unchecked)} flagged star(s): {', '.join(unchecked)}" if unchecked else None))
     except Exception as e:
         sky.finish(pid, [], rejected_reason=f"the hub could not verify the upload ({type(e).__name__}); please run the search again later")
 
@@ -1029,6 +1039,17 @@ th{{font-weight:700;border-bottom:.1rem solid #000}} .n{{text-align:right}} .kv 
 <footer><a href="/privacy" style="color:inherit">Privacy policy</a><span class="mono">KEPLER v{VERSION} &middot; {stamp}</span></footer>
 </body></html>"""
     return HTMLResponse(page)
+
+
+def _titles_in_annotations():
+    """The Connectors Directory reads a tool's human-readable name from annotations.title. Copy each tool's title there
+    (READ and NOTE are shared objects, so each tool gets its own copy)."""
+    for t in mcp._tool_manager._tools.values():
+        if t.title and t.annotations is not None and not t.annotations.title:
+            t.annotations = t.annotations.model_copy(update={"title": t.title})
+
+
+_titles_in_annotations()
 
 
 def main():

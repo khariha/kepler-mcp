@@ -243,7 +243,7 @@ def submit(hunter_id, pid, rows, now=None):
             return flagged, (random.choice(quiet) if quiet else None)
 
 
-def finish(pid, verified, rejected_reason=None, now=None):
+def finish(pid, verified, rejected_reason=None, now=None, note=None):
     """Close a patch after the hub's re-check. verified: lead dicts ready for the queue. A rejected patch goes back to unopened."""
     now = now or time.time()
     with _lock, _db() as c:
@@ -252,7 +252,7 @@ def finish(pid, verified, rejected_reason=None, now=None):
             c.execute("delete from patch_rows where patch_id=?", (pid,))
             c.execute("update patches set status='unopened', opened_by=null, claimed_until=null, n_flagged=0, note=? where id=?", (rejected_reason[:200], pid))
             return {"patch_id": pid, "status": "rejected", "reason": rejected_reason}
-        c.execute("update patches set status='done', done_at=?, n_leads=?, note=null where id=?", (now, len(verified), pid))
+        c.execute("update patches set status='done', done_at=?, n_leads=?, note=? where id=?", (now, len(verified), (note or None) and note[:200], pid))
         return {"patch_id": pid, "status": "done", "opened_by": p["opened_by"], "n_stars": p["n_stars"], "n_leads": len(verified)}
 
 
@@ -329,6 +329,13 @@ def get(pid):
         if not p:
             raise SkyError(f"there is no patch {pid}")
         return dict(p)
+
+
+def flagged_rows(pid):
+    """The uploaded rows that met the lead bar, i.e. what the hub was asked to re-check."""
+    with _lock, _db() as c:
+        rows = [json.loads(r["row"]) for r in c.execute("select row from patch_rows where patch_id=? order by tic", (pid,))]
+    return [r for r in rows if lead_bar(r)]
 
 
 def star_of(pid, tic):
