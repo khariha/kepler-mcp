@@ -25,7 +25,7 @@ Questions: mcp-review@anthropic.com. Requirements source: https://claude.com/doc
   Nothing Kepler reports is a confirmed planet; confirmation needs follow-up observations.
 - **Categories (1-5):** Science, Education, Research [check the portal's list]
 - **Documentation URL:** [the public README or a page on genexperiences.com]
-- **Privacy policy URL:** [publish docs/privacy.md, e.g. https://kepler.genexperiences.com/privacy]
+- **Privacy policy URL:** https://kepler.genexperiences.com/privacy
 - **Support contact:** company@genexperiences.com
 
 ## Example prompts (at least three)

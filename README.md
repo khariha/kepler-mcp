@@ -5,11 +5,14 @@ MCP server for transit search and vetting on NASA TESS full-frame images. It fin
 Three workflows:
 - **Check a star.** Name any star TESS observed: light curve from raw pixels, transit search, false-positive tests, multi-sector repetition.
 - **Vet a lead.** Take a queued signal from a searched patch of sky, run the tests, record a verdict. A lead is listed as a candidate after two independent candidate verdicts and agreement from the server's own results.
-- **Search new sky.** Claim a patch of about 150 unsearched stars; a local helper searches it on your own computer in about seven minutes and uploads the numbers. Each patch is searched once and stored for everyone.
+- **Search new sky.** Claim a patch of about 150 unsearched stars; the Field Search Tool searches it in your own browser in about six minutes, with nothing to install, and uploads the numbers. Each patch is searched once and stored for everyone.
 
 Output follows AAS-journal and TESS follow-up wording (planet candidate, false positive, false alarm, recovered in N of M Sectors), gives epochs in BJD_TDB, and returns a record shaped for a Research Note table or an ExoFOP CTOI upload when a signal is recovered. Users are volunteers, colloquially planet hunters; the project is not affiliated with Planet Hunters TESS. An optional guided lesson (`lesson`) recovers a known planet step by step.
 
 ## Quick start
+Use the public server: `claude mcp add --transport http kepler https://kepler.genexperiences.com/mcp`, or in the Claude app, Settings › Connectors › Add custom connector with the same URL.
+
+Or run your own:
 ```bash
 git clone https://github.com/khariha/kepler-mcp.git && cd kepler-mcp
 pip install -e .
@@ -33,22 +36,19 @@ Then, in Claude: "Use Kepler to check Pi Mensae", "give me a lead to vet", or "s
 The board is also a web page at `/board` (JSON at `/board.json`).
 
 ## Opening a patch of sky
-Leads come from searching stars nobody has searched, and planet hunters do that themselves. The hub divides each open TESS sector into **patches** of about 150 faint red dwarfs. `open_patch` hands one to a hunter with a single command:
+Leads come from searching stars nobody has searched, and planet hunters do that themselves, on their own computers. The hub divides each open TESS sector into **patches** of about 150 stars of one type (red, orange or yellow). `open_patch` hands one to a hunter as a link to the **Field Search Tool** (`/search/<patch>`), which Claude opens in the browser. In chat apps that show MCP Apps, the same page runs as a panel in the conversation.
 
-```bash
-kepler-sweep s7-c1-1-02 --hunter <hunter_id> --hub https://your-kepler-host
-```
-That helper runs on the hunter's own computer for about seven minutes. It gets the star list from the hub, reads each star's pixels straight from NASA's public files, runs the search, and uploads one row of numbers per star. An interrupted run resumes. The patch is then stored for everyone and never searched again.
+The page reads each star's pixels straight from NASA's public TESS cubes, runs the same search as the hub in the browser (Pyodide), shows each star live (cutout, aperture, folded light curve), and uploads one row of numbers per star. Nothing is installed. Closing the tab pauses the search and reopening the link resumes it; a second window on the same patch stops itself. The patch is then stored for everyone and never searched again.
 
 | Tool | What it does |
 |---|---|
 | `sky_map(sector?)` | which patches are searched, unopened, or in progress, and leads found |
-| `open_patch(hunter_id, patch_id?)` | claim a patch for two hours and get the command |
+| `open_patch(hunter_id, patch_id?, star_type?)` | claim a patch for two hours and get the Field Search Tool link |
 | `patch_status(patch_id)` | what came back |
 
 **The hub checks before it believes.** Uploaded results are untrusted. Every signal an upload reports is re-run by the hub itself, and only signals it reproduces become leads, credited to the hunter whose computer found them. One quiet star per patch is re-run too; an upload that disagrees is rejected and the patch reopens.
 
-`kepler-sweep --mcp` runs the same helper as a local MCP server with one tool, `sweep_patch`, for people who would rather add it once than paste commands.
+`kepler-sweep` is a command-line version of the same search, for people who would rather run it natively (`pip install` this repository; `kepler-sweep --mcp` serves it as a local MCP server).
 
 **Integrity of the board.** A verdict is refused until the vetting and the multi-sector follow-up have actually been run on the lead's exact values. The server keeps its own reading of every lead from those results. A lead is listed as surviving only when two different planet hunters call it a candidate **and** the server's reading agrees, so nobody can vote an impostor onto the board. Nothing is submitted to any archive.
 
@@ -94,7 +94,7 @@ Public archives only: TESS full-frame-image cubes and the TESS Input Catalog fro
 ## Running a public instance
 [deploy/README.md](deploy/README.md) has a one-box Docker and Caddy setup. A public instance rate-limits per user (60 ordinary calls and 5 follow-ups an hour by default) and caches results.
 
-**Logging.** By default the server appends tool name, arguments, numeric results, duration and an anonymous daily-rotating id to a local JSON-lines file. It stores no IP address, account, prompt or model reasoning. A hunter name, if someone picks one, is public on the board. Set `KEPLER_TRACES=0` to turn it off.
+**Logging.** By default the server appends tool name, arguments, numeric results, duration and an anonymous daily-rotating id to a local JSON-lines file. It stores no IP address, account, prompt or model reasoning (the web proxy in front of a public instance logs IP addresses as any website does). The public instance's policy is at [/privacy](https://kepler.genexperiences.com/privacy). A hunter name, if someone picks one, is public on the board. Set `KEPLER_TRACES=0` to turn it off.
 
 ## Development
 ```bash
@@ -102,6 +102,6 @@ pip install -e ".[dev]" && pytest          # offline tests
 python scripts/warm.py http://127.0.0.1:8000/mcp   # live smoke test against a running server
 ```
 `ops/dev_leads.jsonl` holds three well-known practice stars. Real leads come from searched patches. Hub settings: `KEPLER_OPEN_SECTORS` (default "7 8"), `KEPLER_PATCH_SIZE` (150), `KEPLER_PATCHES_PAUSED=1`, `KEPLER_EXCLUDE` (a file of TICs that must never be searched), `KEPLER_PUBLIC_URL`.
-```bash
-```
-MIT licence.
+
+## License
+[MIT](LICENSE). Copyright (c) 2026 Kishore Hariharan, Generative Experiences.
