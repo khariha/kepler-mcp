@@ -15,7 +15,7 @@ account of yours and never asks for credentials.
 - **A handle, if you choose one.** Handles are public: they appear on the board with the signals you searched and vetted.
   The recovery word you pick is never stored; only a one-way hash of it, used to recognise you when you sign in again.
 - **Verdicts you submit** and the short reason you write with them. These are public on the board when a signal is listed.
-- **Field-search uploads.** If you run a field search, the helper on your computer uploads one row of numbers per star
+- **Field-search uploads.** If you run a field search, the Field Search Tool page in your browser uploads one row of numbers per star
   (period, depth, signal strength and similar). No files, paths or personal data are uploaded.
 
 ## What we do not collect
@@ -36,4 +36,4 @@ open datasets or models. We do not sell data and share nothing else with third p
 A handle and its verdicts can be removed on request.
 
 ## Contact
-[DECIDE: support email], Generative Experiences.
+company@genexperiences.com, Generative Experiences.
